@@ -5,9 +5,10 @@ Uso:
     python3 scripts/contas_pagar_hoje.py            # referência = hoje
     python3 scripts/contas_pagar_hoje.py 2026-10-01 # referência = data informada
 
-Variáveis de ambiente obrigatórias:
-    VHSYS_ACCESS_TOKEN         -> header access-token
-    VHSYS_SECRET_ACCESS_TOKEN  -> header secret-access-token
+Autenticação (headers access-token e secret-access-token):
+    - no ambiente cloud do Claude Code, cadastre em "Credenciais de API" para o
+      host api.vhsys.com; o proxy injeta os headers e o script não vê os valores;
+    - fora dele, defina VHSYS_ACCESS_TOKEN e VHSYS_SECRET_ACCESS_TOKEN.
 
 Documentação: https://developers.vhsys.com.br/api/listar-despesa-16258180e0
 """
@@ -25,15 +26,12 @@ PAGE_SIZE = 250  # limite máximo da API
 
 
 def headers():
-    try:
-        return {
-            "access-token": os.environ["VHSYS_ACCESS_TOKEN"],
-            "secret-access-token": os.environ["VHSYS_SECRET_ACCESS_TOKEN"],
-            "User-Agent": "FinanceiroOperacional/1.0",
-            "Cache-Control": "no-cache",
-        }
-    except KeyError as e:
-        sys.exit(f"Variável de ambiente ausente: {e.args[0]}")
+    h = {"User-Agent": "FinanceiroOperacional/1.0", "Cache-Control": "no-cache"}
+    for header, var in (("access-token", "VHSYS_ACCESS_TOKEN"),
+                        ("secret-access-token", "VHSYS_SECRET_ACCESS_TOKEN")):
+        if os.environ.get(var):
+            h[header] = os.environ[var]
+    return h
 
 
 def listar_contas_em_aberto():
