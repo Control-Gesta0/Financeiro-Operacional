@@ -58,6 +58,31 @@ Script: `scripts/criar_ordem_servico.py` (usa as credenciais `VHSYS_ACCESS_TOKEN
    vinculada. Compare a conta e a categoria com o que o usuário pediu. A baixa (liquidação)
    só acontece quando o pagamento entrar.
 
+## Venda no cartão (Cielo)
+
+Padrão para pagamento no cartão pela Cielo, mesmo quando o cliente parcela:
+
+- **Parcela única** no valor total cobrado no cartão, conta `CIELO`, forma `Cartão de Crédito`.
+- **Vencimento em 1 dia útil** após a data da venda. Pule sábado, domingo e feriado nacional.
+  Venda na quarta vence na quinta. Venda na sexta vence na segunda.
+- O item entra pelo **valor à vista** da proposta. A diferença até o total pago no cartão entra
+  como `TAXAS FINANCEIRAS` (85329997).
+
+Exemplo (OS 75): proposta à vista R$ 780,17 e cobrança no cartão em 6x de R$ 140,83, total
+R$ 844,97. A OS fica com KA6 a R$ 780,17 e TAXAS FINANCEIRAS a R$ 64,80, em parcela única de
+R$ 844,97 no dia útil seguinte:
+
+```json
+"servicos": [
+  {"id_servico": 85329994, "descricao": "KOMMO CRM AVANÇADO 6 MESES", "quantidade": 1, "valor_unitario": "780.17"},
+  {"id_servico": 85329997, "descricao": "TAXAS FINANCEIRAS", "quantidade": 1, "valor_unitario": "64.80"}
+],
+"parcelas": ["2026-10-01"],
+"forma_pagamento": "Cartão de Crédito",
+"conta_bancaria": "CIELO",
+"categoria": "10.01.03"
+```
+
 ## Receita avulsa já lançada para uma OS
 
 Se o `--conferir` acusar uma receita avulsa, ela duplica a cobrança da OS. Com o ok do usuário,
@@ -97,5 +122,6 @@ O script resolve pelo nome da conta e pelo código da categoria. Os IDs ficam aq
 | Uso | Valor no pedido.json | Nome no VHSYS | id |
 |---|---|---|---|
 | Conta PJ para Pix e transferência | `"conta_bancaria": "C6"` | C6 | 1060867 |
+| Cartão de crédito (Cielo) | `"conta_bancaria": "CIELO"` | CIELO | 1322036 |
 | Venda Kommo (licença e suporte) | `"categoria": "10.01.03"` | 10.01.03 - Venda de sistemas KOMMO | 9704937 |
 | Implantação Kommo | `"categoria": "10.02.02"` | 10.02.02 - Implantação Sistemas KOMMO | 9649018 |
