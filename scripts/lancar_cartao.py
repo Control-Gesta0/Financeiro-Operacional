@@ -92,9 +92,22 @@ def buscar(texto):
         print(f"  {i}  {n}")
 
 
-def duplicadas(corpo, pedido):
+def nomes_por_id(id_categoria, id_fornecedor, recentes):
+    """O VHSYS não preenche categoria_pag/nome_fornecedor a partir dos IDs; busca no histórico."""
+    for contas in (recentes, None):
+        contas = contas if contas is not None else despesas_recentes(limite=10**6)
+        cat = next((c["categoria_pag"] for c in contas if c.get("id_categoria") == id_categoria
+                    and c.get("categoria_pag")), None)
+        forn = next((c["nome_fornecedor"] for c in contas if c.get("id_fornecedor") == id_fornecedor
+                     and c.get("nome_fornecedor")), None)
+        if cat and forn:
+            return cat, forn
+    sys.exit(f"Não achei no histórico o nome da categoria {id_categoria} ou do fornecedor {id_fornecedor}.")
+
+
+def duplicadas(corpo, pedido, recentes):
     achadas = []
-    for c in despesas_recentes():
+    for c in recentes:
         mesmo_pedido = pedido and pedido in (c.get("observacoes_pag") or "")
         mesmo_valor = (str(c.get("id_fornecedor")) == str(corpo["id_fornecedor"])
                        and Decimal(c.get("valor_pag") or "0") == Decimal(corpo["valor_pag"])
@@ -130,12 +143,16 @@ def main():
         p.error(f"--nome tem {len(a.nome)} caracteres; o VHSYS aceita até 45")
 
     cartao = CARTOES[a.cartao]
+    recentes = despesas_recentes()
+    categoria, fornecedor = nomes_por_id(a.categoria_id, a.fornecedor_id, recentes)
     venc = a.vencimento or vencimento_fatura(a.compra, cartao)
     corpo = {
         "nome_conta": a.nome,
         "id_banco": cartao["id_banco"],
         "id_categoria": a.categoria_id,
+        "categoria_pag": categoria,
         "id_fornecedor": a.fornecedor_id,
+        "nome_fornecedor": fornecedor,
         "valor_pag": f"{a.valor:.2f}",
         "data_emissao": a.compra.isoformat(),
         "vencimento_pag": venc.isoformat(),
@@ -150,7 +167,7 @@ def main():
     print(f"Valor:       {brl(a.valor)}")
     print(json.dumps(corpo, ensure_ascii=False, indent=2))
 
-    dups = duplicadas(corpo, a.pedido)
+    dups = duplicadas(corpo, a.pedido, recentes)
     if dups:
         print("\nATENÇÃO: possíveis lançamentos duplicados:")
         for c in dups:
