@@ -35,7 +35,7 @@ Só usa a biblioteca padrão do Python 3.9+; não precisa instalar nada.
   inclusive no `/auth`. Sem ele a autenticação nem completa o handshake TLS.
   O e-mail com as credenciais traz só ClientId, ClientSecret e chave Pix. Veja se
   veio algum anexo ou link à parte; se não veio, peça a `homologacaoapi@c6bank.com`
-  (modelo de e-mail no final).
+  (modelo de e-mail no final). Veja "Certificado" abaixo.
 - **URL de webhook para teste.** Os testes B_07 e P_06 cadastram webhooks. Uma URL
   de https://webhook.site serve.
 - **Rodar fora de proxy que intercepte TLS.** mTLS não passa por proxy que abre o
@@ -124,6 +124,32 @@ Revise no Word e envie para `homologacaoapi@c6bank.com`.
 Depois da homologação, a liberação em produção exige conta PJ C6 aberta no mesmo
 CNPJ cadastrado no Portal do Desenvolvedor (conta MEI não vale). Em produção a URL
 base é `https://baas-api.c6bank.info` e o `billing_scheme` do BolePix passa a ser `15`.
+
+## Certificado
+
+O certificado não é gerado com `openssl` nem por CSR: o C6 gera e você baixa,
+junto com o ClientId e o ClientSecret ao qual ele está vinculado. Por isso o
+certificado precisa ser o do mesmo par de credenciais que você vai usar.
+
+- **Sandbox:** as credenciais vêm por e-mail do time de homologação. Se o
+  certificado não veio junto, peça a eles (modelo abaixo). Não use um
+  certificado de produção com credenciais do sandbox, nem o contrário.
+- **Produção:** no Web Banking da conta PJ C6, com usuário de perfil Master:
+  menu do perfil (três pontinhos) → *Meu perfil* → *Integrações via API* →
+  *Nova chave*. Informe o parceiro (o software), uma descrição e os produtos
+  (permissões). A tela mostra ClientId e ClientSecret e oferece o download do
+  certificado, um pacote com `cert.crt` e `cert.key`. **O download só aparece
+  nessa hora.** Se perder o arquivo, é preciso criar outra chave.
+
+Se o C6 entregar um `.pfx`/`.p12` em vez do par `.crt`/`.key`, extraia assim:
+
+```bash
+openssl pkcs12 -in cert.pfx -clientcerts -nokeys -out cert.crt
+openssl pkcs12 -in cert.pfx -nocerts -nodes -out cert.key
+```
+
+Guarde o `.key` fora do repositório (o `.gitignore` desta pasta já bloqueia
+`*.crt`, `*.key`, `*.pfx`) e aponte `C6_CERT_FILE`/`C6_KEY_FILE` no `.env`.
 
 ## Modelo de e-mail: solicitar o certificado do sandbox
 
