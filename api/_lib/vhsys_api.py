@@ -74,3 +74,20 @@ def desliquidar(id_receita):
     if not corpo or corpo.get("status") != "success":
         raise ErroVhsys(f"desliquidar {id_receita}: {json.dumps(corpo, ensure_ascii=False)[:300]}")
     return corpo
+
+
+def listar_liquidadas(data):
+    """Receitas liquidadas com data de pagamento no dia (YYYY-MM-DD)."""
+    receitas, offset = [], 0
+    while True:
+        corpo = _chamar("GET", "/contas-receber", {
+            "data_pagamento": data, "liquidado": "Sim", "lixeira": "Nao",
+            "limit": 250, "offset": offset,
+        })
+        if not corpo or corpo.get("status") != "success":
+            return receitas
+        pagina = corpo.get("data") or []
+        receitas.extend(r for r in pagina if r.get("liquidado_rec") == "Sim")
+        offset += len(pagina)
+        if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
+            return receitas

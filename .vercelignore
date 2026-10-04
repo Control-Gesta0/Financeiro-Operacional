@@ -1,4 +1,5 @@
-# Na Vercel só sobem as funções de api/. Scripts, skills e documentos ficam de fora
-# para não virarem arquivos públicos no deploy.
+# Na Vercel só sobem as funções de api/ e o vercel.json (cron). Scripts, skills e
+# documentos ficam de fora para não virarem arquivos públicos no deploy.
 /*
 !/api
+!/vercel.json

@@ -8,7 +8,8 @@ import os
 from http.server import BaseHTTPRequestHandler
 
 VARIAVEIS = ("VHSYS_ACCESS_TOKEN", "VHSYS_SECRET_ACCESS_TOKEN", "ASAAS_API_KEY",
-             "ASAAS_WEBHOOK_TOKEN")
+             "ASAAS_WEBHOOK_TOKEN", "CRON_SECRET", "UAZAPI_URL", "UAZAPI_TOKEN",
+             "CONCILIACAO_WHATSAPP")
 
 
 class handler(BaseHTTPRequestHandler):
