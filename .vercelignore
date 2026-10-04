@@ -1,0 +1,4 @@
+# Na Vercel só sobem as funções de api/. Scripts, skills e documentos ficam de fora
+# para não virarem arquivos públicos no deploy.
+/*
+!/api
