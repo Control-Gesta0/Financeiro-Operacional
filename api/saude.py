@@ -15,6 +15,8 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         corpo = json.dumps({
             "ok": True,
+            "baixa_modo": "ativo" if os.environ.get("BAIXA_MODO", "").strip().lower() == "ativo"
+            else "simulacao",
             "credenciais": {v: bool(os.environ.get(v)) for v in VARIAVEIS},
         }).encode()
         self.send_response(200)
