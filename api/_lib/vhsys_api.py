@@ -97,7 +97,8 @@ def _todas(params, caminho="/contas-receber"):
 
 def buscar_por_cobranca(id_cobranca, valor=None):
     """Receitas com o ID da cobrança do Asaas nas observações (o ERP Lite grava
-    "Cobranca em aberto no Asaas (pay_...)" ao emitir).
+    "Cobranca em aberto no Asaas (pay_...)" ao emitir) ou na observação do pagamento
+    (gravada pela baixa automática).
 
     Com valor, procura entre as receitas desse valor exato, abertas ou não. Sem valor,
     varre as em aberto (mais lento, usado quando o valor pago difere do título).
@@ -108,7 +109,10 @@ def buscar_por_cobranca(id_cobranca, valor=None):
     else:
         params = {"liquidado": "Nao", "lixeira": "Nao"}
     codigo = re.compile(re.escape(id_cobranca) + r"(?![A-Za-z0-9])")
-    return [r for r in _todas(params) if codigo.search(r.get("observacoes_rec") or "")]
+    # observacoes_rec: gravado pelo ERP Lite ao emitir; obs_pagamento: gravado pela
+    # nossa baixa (acha de novo uma receita que só foi localizada por valor+vencimento).
+    return [r for r in _todas(params)
+            if codigo.search((r.get("observacoes_rec") or "") + " " + (r.get("obs_pagamento") or ""))]
 
 
 def liquidar(id_receita, campos):

@@ -31,7 +31,8 @@ class Vhsys:
         return self.receitas.get(int(id_receita))
 
     def buscar_por_cobranca(self, pid, valor=None):
-        return [r for r in self.receitas.values() if pid in r.get("observacoes_rec", "")]
+        return [r for r in self.receitas.values()
+                if pid in r.get("observacoes_rec", "") + (r.get("obs_pagamento") or "")]
 
     def buscar_abertas(self, valor, vencimento):
         return [r for r in self.receitas.values() if r["liquidado_rec"] == "Nao"
@@ -114,6 +115,22 @@ class TestReprocessar(unittest.TestCase):
         self.assertEqual(v.liquidadas[0][1]["data_pagamento"], DIA)
         self.assertEqual([d["valor_pag"] for d in v.despesas], ["2.84"])
         self.assertTrue(r["aplicado"])
+
+    def test_receita_achada_por_valor_e_depois_baixada_e_achada_de_novo(self):
+        # Caso real de 30/09/2026: Viviane foi baixada após ser achada por valor+vencimento
+        # e, ao reprocessar, não aparecia mais (só buscava receitas em aberto).
+        v, a = cenario()
+        v.receitas[55] = receita(55, "162.50", "2026-09-20")
+        a.extrato.append(mov("PAYMENT_RECEIVED", 164.66, "pay_vi"))
+        a.cobrancas["pay_vi"] = {"id": "pay_vi", "value": 164.66, "originalValue": 162.5,
+                                 "netValue": 162.81, "dueDate": "2026-09-20",
+                                 "paymentDate": DIA, "billingType": "PIX"}
+        with mock.patch.dict(os.environ, {"BAIXA_MODO": "ativo"}):
+            reprocessamento.reprocessar(DIA, v, a, aplicar=True)
+            r = reprocessamento.reprocessar(DIA, v, a, aplicar=True)
+        vi = next(x for x in r["resultados"] if x["cobranca"] == "pay_vi")
+        self.assertEqual((vi["resultado"], vi["receita"]), ("ja_liquidada", 55))
+        self.assertEqual(vi["localizada_por"], "id da cobrança nas observações")
 
     def test_rodar_de_novo_nao_baixa_em_dobro(self):
         v, a = cenario()

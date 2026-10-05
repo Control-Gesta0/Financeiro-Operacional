@@ -36,7 +36,7 @@ class Vhsys:
 
     def buscar_por_cobranca(self, id_cobranca, valor=None):
         return [r for r in self.receitas.values()
-                if id_cobranca in (r.get("observacoes_rec") or "")
+                if id_cobranca in (r.get("observacoes_rec") or "") + (r.get("obs_pagamento") or "")
                 and (valor is not None or r["liquidado_rec"] == "Nao")
                 and (valor is None or r["valor_rec"] == valor)]
 
