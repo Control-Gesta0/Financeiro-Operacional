@@ -127,8 +127,20 @@ class TestRegra(unittest.TestCase):
         self.assertEqual(d["id_banco"], "7001")  # a mesma conta da receita (Asaas)
         self.assertEqual((d["vencimento_pag"], d["data_pagamento"], d["liquidado_pag"]),
                          ("2026-10-11", "2026-10-11", "Sim"))
-        self.assertEqual(d["nome_conta"], "Taxas Asaas - fatura 868268326 - José da Silva")
+        self.assertEqual(d["nome_conta"], "Taxas Asaas 868268326 - José da Silva")
         self.assertIn("Taxas da cobrança Asaas pay_1 (receita 10)", d["observacoes_pag"])
+
+    def test_nome_da_despesa_cabe_em_45_caracteres(self):
+        # Caso real de 05/10/2026: o VHSYS recusou o nome com o cliente inteiro.
+        nome = baixa.nome_despesa_taxa("868268326", "J.N DOS REIS LOCACOES FESTAS E EVENTOS")
+        self.assertLessEqual(len(nome), 45)
+        self.assertTrue(nome.startswith("Taxas Asaas 868268326 - J.N DOS REIS"))
+        self.assertEqual(baixa.nome_despesa_taxa("pay_4r7akexz0qfrn793", ""),
+                         "Taxas Asaas pay_4r7akexz0qfrn793")
+        r = receita(10, cliente="J.N DOS REIS LOCACOES FESTAS E EVENTOS")
+        campos = baixa.campos_despesa_taxa({"id": "pay_1", "invoiceNumber": "868268326",
+                                            "paymentDate": "2026-09-30"}, r, "2.84")
+        self.assertIn("J.N DOS REIS LOCACOES FESTAS E EVENTOS", campos["observacoes_pag"])
 
     def test_taxa_soma_pix_e_mensageria_do_extrato(self):
         # Caso real de 30/09/2026: Taxa do Pix 1,85 + Taxa de mensageria 0,99.
