@@ -6,6 +6,7 @@ Documentação: https://developers.vhsys.com.br/api/listar-receita-16174385e0
 """
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -77,6 +78,35 @@ def buscar_abertas(valor, vencimento):
             if r.get("liquidado_rec", "Nao") == "Nao"
             and Decimal(str(r.get("valor_rec") or 0)) == alvo
             and vencimento in (r.get("vencimento_rec"), r.get("vencimento_original"))]
+
+
+def _todas(params):
+    receitas, offset = [], 0
+    while True:
+        corpo = _chamar("GET", "/contas-receber", {**params, "limit": 250, "offset": offset})
+        if not corpo or corpo.get("status") != "success":
+            return receitas
+        pagina = corpo.get("data") or []
+        receitas.extend(pagina)
+        offset += len(pagina)
+        if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
+            return receitas
+
+
+def buscar_por_cobranca(id_cobranca, valor=None):
+    """Receitas com o ID da cobrança do Asaas nas observações (o ERP Lite grava
+    "Cobranca em aberto no Asaas (pay_...)" ao emitir).
+
+    Com valor, procura entre as receitas desse valor exato, abertas ou não. Sem valor,
+    varre as em aberto (mais lento, usado quando o valor pago difere do título).
+    """
+    if valor is not None:
+        alvo = Decimal(str(valor))
+        params = {"valor_receita": f"{alvo:.2f},{alvo:.2f}", "lixeira": "Nao"}
+    else:
+        params = {"liquidado": "Nao", "lixeira": "Nao"}
+    codigo = re.compile(re.escape(id_cobranca) + r"(?![A-Za-z0-9])")
+    return [r for r in _todas(params) if codigo.search(r.get("observacoes_rec") or "")]
 
 
 def liquidar(id_receita, campos):

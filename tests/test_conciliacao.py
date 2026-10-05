@@ -30,6 +30,12 @@ class Vhsys:
         return [r for r in self.receitas.values() if r["liquidado_rec"] == "Nao"
                 and r["valor_rec"] == valor and r["vencimento_rec"] == vencimento]
 
+    def buscar_por_cobranca(self, id_cobranca, valor=None):
+        return [r for r in self.receitas.values()
+                if id_cobranca in (r.get("observacoes_rec") or "")
+                and (valor is not None or r["liquidado_rec"] == "Nao")
+                and (valor is None or r["valor_rec"] == valor)]
+
     def listar_liquidadas(self, data):
         return [r for r in self.receitas.values()
                 if r["liquidado_rec"] == "Sim" and r.get("data_pagamento") == data]
@@ -128,8 +134,24 @@ class TestMontar(unittest.TestCase):
                    mov("PAYMENT_FEE", -1.99, 98.01, "pay_1")])
         r = conciliar.montar(DIA, v, a)
         self.assertEqual(r["taxas_divergentes"],
-                         [{"receita": 1, "pagamento": "pay_1", "valor": "1.99"}])
-        self.assertIn("🔴 1 receitas baixadas sem a taxa gravada", conciliar.texto(r))
+                         [{"receita": 1, "pagamento": "pay_1", "valor": "1.99", "na_receita": "0"}])
+        t = conciliar.texto(r)
+        self.assertIn("🔴 1 receitas com taxa diferente do extrato", t)
+        self.assertIn("receita 1 · extrato R$ 1,99 · na receita R$ 0,00", t)
+
+    def test_duas_linhas_de_taxa_somam_contra_a_receita(self):
+        # Caso de 30/09/2026: cada cobrança teve duas linhas de taxa somando R$ 2,84.
+        v = Vhsys([receita(1, "Sim", "Baixa automática Asaas pay_1 (PIX).", data_pag=DIA,
+                           taxa="2.84")])
+        a = Asaas([mov("PAYMENT_RECEIVED", 164.66, 164.66, "pay_1"),
+                   mov("PAYMENT_FEE", -1.99, 162.67, "pay_1", "Taxa da cobrança"),
+                   mov("PAYMENT_MESSAGING_NOTIFICATION_FEE", -0.85, 161.82, "pay_1",
+                       "Taxa de mensageria")])
+        r = conciliar.montar(DIA, v, a)
+        self.assertEqual(r["taxas_lancadas"], {"qtd": 2, "total": "2.84"})
+        self.assertEqual(r["taxas_divergentes"], [])
+        self.assertEqual([x["descricao"] for x in r["detalhe_taxas"]],
+                         ["Taxa da cobrança", "Taxa de mensageria"])
 
     def test_fatura_antecipada_se_anula_e_some(self):
         # Caso real de 02/10/2026: venda no cartão antecipada e já baixada no VHSYS.
