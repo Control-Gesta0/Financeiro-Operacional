@@ -101,6 +101,9 @@ def processar_evento(evento, vhsys, asaas):
         # Sem o ID da receita não dá para achar com segurança uma conta já liquidada.
         return {**base, "resultado": "nao_conciliado",
                 "motivo": "estorno sem externalReference: desfazer a baixa manualmente"}
+    if tipo in EVENTOS_BAIXA and pagamento.get("anticipated"):
+        # Antecipada: o título já foi baixado quando o dinheiro entrou na antecipação.
+        return {**base, "resultado": "ignorado", "motivo": "cobrança antecipada"}
     receita, como = localizar_receita(pagamento, vhsys, asaas)
     if not receita:
         return {**base, "resultado": "nao_conciliado", "motivo": como}

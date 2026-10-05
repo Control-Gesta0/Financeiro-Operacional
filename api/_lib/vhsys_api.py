@@ -9,6 +9,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal
 
 BASE_URL = os.environ.get("VHSYS_BASE_URL", "https://api.vhsys.com/v2")
 
@@ -52,14 +53,30 @@ def consultar_receita(id_receita):
 
 
 def buscar_abertas(valor, vencimento):
-    """Receitas não liquidadas e fora da lixeira com esse valor e vencimento."""
-    corpo = _chamar("GET", "/contas-receber", {
-        "valor_receita": valor, "data_vencimento": vencimento,
-        "liquidado": "Nao", "lixeira": "Nao", "limit": 50,
-    })
-    if not corpo or corpo.get("status") != "success":
-        return []
-    return [r for r in corpo.get("data") or [] if r.get("liquidado_rec", "Nao") == "Nao"]
+    """Receitas não liquidadas e fora da lixeira com exatamente esse valor e vencimento.
+
+    Nos filtros do VHSYS um valor sozinho quer dizer "a partir de" (valor_receita=10.00
+    traz tudo de R$ 10,00 para cima). Por isso o valor vai como faixa "X,X" e valor e
+    vencimento são conferidos aqui de novo. O vencimento aceita o atual ou o original,
+    para receitas prorrogadas.
+    """
+    alvo, receitas, offset = Decimal(str(valor)), [], 0
+    while True:
+        corpo = _chamar("GET", "/contas-receber", {
+            "valor_receita": f"{alvo:.2f},{alvo:.2f}", "liquidado": "Nao", "lixeira": "Nao",
+            "limit": 250, "offset": offset,
+        })
+        if not corpo or corpo.get("status") != "success":
+            break
+        pagina = corpo.get("data") or []
+        receitas.extend(pagina)
+        offset += len(pagina)
+        if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
+            break
+    return [r for r in receitas
+            if r.get("liquidado_rec", "Nao") == "Nao"
+            and Decimal(str(r.get("valor_rec") or 0)) == alvo
+            and vencimento in (r.get("vencimento_rec"), r.get("vencimento_original"))]
 
 
 def liquidar(id_receita, campos):
@@ -87,7 +104,9 @@ def listar_liquidadas(data):
         if not corpo or corpo.get("status") != "success":
             return receitas
         pagina = corpo.get("data") or []
-        receitas.extend(r for r in pagina if r.get("liquidado_rec") == "Sim")
+        # data_pagamento também pode ser "a partir de": confere o dia exato aqui.
+        receitas.extend(r for r in pagina
+                        if r.get("liquidado_rec") == "Sim" and r.get("data_pagamento") == data)
         offset += len(pagina)
         if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
             return receitas

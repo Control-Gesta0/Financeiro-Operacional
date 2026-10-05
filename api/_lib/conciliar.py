@@ -7,6 +7,7 @@ Os demais movimentos (taxas, transferências, estornos) são somados à parte: a
 são lançados no VHSYS, então entram no relatório como "a lançar".
 """
 import datetime as dt
+import re
 from collections import defaultdict
 from decimal import Decimal
 
@@ -60,8 +61,34 @@ def _resumo(movs):
             "total": str(sum((abs(Decimal(str(m.get("value") or 0))) for m in movs), Decimal(0)))}
 
 
+def _fatura(mov):
+    m = re.search(r"fatura nr\.?\s*(\d+)", mov.get("description") or "", re.I)
+    return m.group(1) if m else None
+
+
+def separar_antecipadas(extrato):
+    """Tira do extrato os pares 'cobrança recebida' + 'baixa da antecipação' da mesma
+    fatura e mesmo valor. A fatura já foi baixada quando foi antecipada e os dois
+    movimentos se anulam no caixa do dia."""
+    restantes, pares = list(extrato), []
+    for rec in [m for m in extrato if m.get("type") == "PAYMENT_RECEIVED"]:
+        valor = Decimal(str(rec.get("value") or 0))
+        par = next((m for m in restantes if m is not rec
+                    and "antecipa" in (m.get("description") or "").lower()
+                    and Decimal(str(m.get("value") or 0)) == -valor
+                    and ((rec.get("paymentId") and m.get("paymentId") == rec.get("paymentId"))
+                         or (_fatura(rec) and _fatura(m) == _fatura(rec)))), None)
+        if par:
+            restantes.remove(rec)
+            restantes.remove(par)
+            pares.append({"pagamento": rec.get("paymentId"), "valor": rec.get("value"),
+                          "descricao": rec.get("description")})
+    return restantes, pares
+
+
 def montar(data, vhsys, asaas):
-    extrato = asaas.listar_extrato(data)
+    extrato_completo = asaas.listar_extrato(data)
+    extrato, antecipadas = separar_antecipadas(extrato_completo)
     liquidadas = vhsys.listar_liquidadas(data)
     grupos = defaultdict(list)
     for mov in extrato:
@@ -88,8 +115,13 @@ def montar(data, vhsys, asaas):
             taxas["simulada"].append(m)
         else:
             taxas["a_lancar"].append(m)
-    if taxas["a_lancar"]:
-        grupos["taxa"] = taxas["a_lancar"]
+    pids_do_dia = {x["pagamento"] for x in recebimentos}
+    vinculadas = [m for m in taxas["a_lancar"] if m.get("paymentId") in pids_do_dia]
+    soltas = [m for m in taxas["a_lancar"] if m.get("paymentId") not in pids_do_dia]
+    if vinculadas:
+        grupos["taxa_pendente"] = vinculadas
+    if soltas:
+        grupos["taxa"] = soltas
 
     pagos_no_dia = {m.get("paymentId") for m in grupos["recebimento"]}
     sem_credito = [r for r in liquidadas
@@ -103,15 +135,16 @@ def montar(data, vhsys, asaas):
         "baixas_sem_credito": [{"receita": r.get("id_conta_rec"), "cliente": r.get("nome_cliente"),
                                 "valor": r.get("valor_pago")} for r in sem_credito],
         "totais": {g: str(sum((Decimal(str(m.get("value") or 0)) for m in movs), Decimal(0)))
-                   for g, movs in grupos.items()},
-        "qtd": {g: len(movs) for g, movs in grupos.items()},
+                   for g, movs in grupos.items() if movs},
+        "qtd": {g: len(movs) for g, movs in grupos.items() if movs},
         "outros": [m.get("description") for m in grupos["outro"]],
         "taxas_lancadas": _resumo(taxas["lancada"]),
         "taxas_simuladas": _resumo(taxas["simulada"]),
         "taxas_divergentes": [{"receita": m["receita"], "pagamento": m.get("paymentId"),
                                "valor": str(abs(Decimal(str(m.get("value") or 0))))}
                               for m in taxas["divergente"]],
-        "saldo_final": extrato[-1].get("balance") if extrato else None,
+        "antecipadas_compensadas": antecipadas,
+        "saldo_final": extrato_completo[-1].get("balance") if extrato_completo else None,
     }
 
 
@@ -126,7 +159,10 @@ def texto(r):
     por_status = defaultdict(list)
     for x in rec:
         por_status[x["status"]].append(x)
-    linhas.append(f"\nRecebimentos: {len(rec)} · {brl(r['totais'].get('recebimento', 0))}")
+    if rec:
+        linhas.append(f"\nRecebimentos: {len(rec)} · {brl(r['totais'].get('recebimento', 0))}")
+    else:
+        linhas.append("\nNenhum recebimento a conciliar neste dia.")
     if por_status["baixado"]:
         linhas.append(f"✅ {len(por_status['baixado'])} baixados no VHSYS pela integração")
     if por_status["manual"]:
@@ -160,7 +196,8 @@ def texto(r):
         for x in r["taxas_divergentes"][:MAX_ITENS]:
             linhas.append(f"• receita {x['receita']} · taxa {brl(x['valor'])}")
 
-    rotulos = (("taxa", "Taxas sem cobrança vinculada"), ("transferencia", "Transferências e Pix enviados"),
+    rotulos = (("taxa_pendente", "Taxas das cobranças sem baixa"),
+               ("taxa", "Taxas sem cobrança vinculada"), ("transferencia", "Transferências e Pix enviados"),
                ("estorno", "Estornos e chargebacks"), ("outro", "Outros movimentos"))
     a_lancar = [(rot, g) for g, rot in rotulos if r["qtd"].get(g)]
     if a_lancar:

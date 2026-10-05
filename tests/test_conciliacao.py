@@ -131,6 +131,41 @@ class TestMontar(unittest.TestCase):
                          [{"receita": 1, "pagamento": "pay_1", "valor": "1.99"}])
         self.assertIn("🔴 1 receitas baixadas sem a taxa gravada", conciliar.texto(r))
 
+    def test_fatura_antecipada_se_anula_e_some(self):
+        # Caso real de 02/10/2026: venda no cartão antecipada e já baixada no VHSYS.
+        desc = "fatura nr. 870087308 WESLEY ADVOCACIA"
+        a = Asaas([mov("PAYMENT_RECEIVED", 118.11, 2355.60, "pay_l34", f"Cobrança recebida - {desc}"),
+                   mov("RECEIVABLE_ANTICIPATION_DEBIT", -118.11, 2237.49, None,
+                       f"Baixa da antecipação - {desc}")])
+        r = conciliar.montar(DIA, Vhsys([]), a)
+        self.assertEqual(r["recebimentos"], [])
+        self.assertEqual(r["qtd"], {})
+        self.assertEqual([x["pagamento"] for x in r["antecipadas_compensadas"]], ["pay_l34"])
+        t = conciliar.texto(r)
+        self.assertIn("Nenhum recebimento a conciliar", t)
+        self.assertNotIn("🔴", t)
+        self.assertNotIn("antecipação", t)
+        self.assertIn("Saldo Asaas no fim do dia: R$ 2.237,49", t)
+
+    def test_antecipacao_de_outro_valor_nao_compensa(self):
+        a = Asaas([mov("PAYMENT_RECEIVED", 118.11, 100, "pay_1",
+                       "Cobrança recebida - fatura nr. 1"),
+                   mov("RECEIVABLE_ANTICIPATION_DEBIT", -50, 50, None,
+                       "Baixa da antecipação - fatura nr. 1")],
+                  {"pay_1": {"id": "pay_1", "value": 118.11, "dueDate": "2026-10-10"}})
+        r = conciliar.montar(DIA, Vhsys([]), a)
+        self.assertEqual(len(r["recebimentos"]), 1)
+        self.assertEqual(r["antecipadas_compensadas"], [])
+
+    def test_taxa_de_cobranca_pendente_tem_rotulo_proprio(self):
+        a = Asaas([mov("PAYMENT_RECEIVED", 828, 828, "pay_jn"),
+                   mov("PAYMENT_FEE", -1.99, 826.01, "pay_jn"),
+                   mov("TRANSFER_FEE", -1, 825.01)],
+                  {"pay_jn": {"id": "pay_jn", "value": 828, "dueDate": "2026-09-05"}})
+        t = conciliar.texto(conciliar.montar(DIA, Vhsys([]), a))
+        self.assertIn("Taxas das cobranças sem baixa: 1 · R$ -1,99", t)
+        self.assertIn("Taxas sem cobrança vinculada: 1 · R$ -1,00", t)
+
     def test_dia_sem_movimento(self):
         r = conciliar.montar(DIA, Vhsys([]), Asaas([]))
         self.assertIn("Sem movimento", conciliar.texto(r))
