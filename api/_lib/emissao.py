@@ -40,11 +40,21 @@ def _digitos(texto):
     return re.sub(r"\D", "", str(texto or ""))
 
 
+def _data_iso(texto):
+    """Aceita "2026-10-05 09:00:00" e "05/10/2026 09:00"; devolve "2026-10-05" ou ""."""
+    texto = str(texto or "").strip()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", texto)
+    if m:
+        return "-".join(m.groups())
+    m = re.match(r"(\d{2})/(\d{2})/(\d{4})", texto)
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else ""
+
+
 def motivo_para_nao_emitir(receita, desde, dia):
     """None se a receita deve virar cobrança; senão o motivo (para o relatório)."""
     if str(receita.get("id_banco") or "") != conta_asaas():
         return "outra conta bancária"
-    if (receita.get("data_cad_rec") or "")[:10] < desde:
+    if _data_iso(receita.get("data_cad_rec")) < desde:
         return "cadastrada antes do início da emissão"
     if receita.get("liquidado_rec") == "Sim":
         return "já liquidada"
@@ -52,7 +62,7 @@ def motivo_para_nao_emitir(receita, desde, dia):
         return "já tem cobrança no Asaas"
     if Decimal(str(receita.get("valor_rec") or 0)) <= 0:
         return "valor zerado"
-    if (receita.get("vencimento_rec") or "") < dia:
+    if _data_iso(receita.get("vencimento_rec")) < dia:
         return "vencida: o Asaas não aceita boleto com vencimento no passado"
     return None
 
@@ -134,16 +144,26 @@ def emitir_receita(receita, vhsys, asaas, aplicar):
     return base
 
 
-def emitir(vhsys, asaas, aplicar=False, desde=None, dia=None):
+FORA_DO_ESCOPO = ("outra conta bancária", "cadastrada antes do início da emissão",
+                  "já liquidada", "já tem cobrança no Asaas")
+
+
+def emitir(vhsys, asaas, aplicar=False, desde=None, dia=None, diagnostico=False):
     desde = desde or os.environ.get("EMISSAO_A_PARTIR_DE", "")
     if not desde:
         raise ValueError("defina EMISSAO_A_PARTIR_DE (AAAA-MM-DD) na Vercel")
     dia = dia or hoje()
-    resultados = []
+    resultados, ignoradas = [], []
     for receita in vhsys.receitas_modificadas_desde(desde):
         motivo = motivo_para_nao_emitir(receita, desde, dia)
-        if motivo in ("outra conta bancária", "cadastrada antes do início da emissão",
-                      "já liquidada", "já tem cobrança no Asaas"):
+        if motivo in FORA_DO_ESCOPO:
+            if diagnostico:  # mostra por que ficou de fora, com os campos que decidem
+                ignoradas.append({
+                    "receita": receita.get("id_conta_rec"), "cliente": receita.get("nome_cliente"),
+                    "motivo": motivo, "id_banco": receita.get("id_banco"),
+                    "data_cad_rec": receita.get("data_cad_rec"),
+                    "vencimento_rec": receita.get("vencimento_rec"),
+                    "observacoes_rec": (receita.get("observacoes_rec") or "")[:120]})
             continue  # fora do escopo: não polui o relatório
         if motivo:
             resultados.append({"receita": receita.get("id_conta_rec"),
@@ -158,6 +178,10 @@ def emitir(vhsys, asaas, aplicar=False, desde=None, dia=None):
             resultados.append({"receita": receita.get("id_conta_rec"),
                                "cliente": receita.get("nome_cliente"),
                                "resultado": "nao_emitida", "motivo": str(e)})
-    return {"desde": desde, "aplicado": aplicar,
-            "resumo": dict(Counter(r["resultado"] for r in resultados)),
-            "resultados": resultados}
+    retorno = {"desde": desde, "aplicado": aplicar,
+               "resumo": dict(Counter(r["resultado"] for r in resultados)),
+               "resultados": resultados}
+    if diagnostico:
+        retorno["ignoradas"] = ignoradas
+        retorno["conta_asaas"] = conta_asaas()
+    return retorno
