@@ -20,9 +20,10 @@ import baixa  # noqa: E402
 
 
 class VhsysFalso:
-    def __init__(self, receitas):
-        self.receitas = {r["id_conta_rec"]: r for r in receitas}
+    def __init__(self, receitas, ignorar=()):
+        self.receitas = {r["id_conta_rec"]: dict(r) for r in receitas}
         self.liquidadas, self.desliquidadas = [], []
+        self.ignorar = set(ignorar)  # campos que o VHSYS falso não grava
 
     def consultar_receita(self, id_receita):
         return self.receitas.get(int(id_receita))
@@ -33,6 +34,8 @@ class VhsysFalso:
 
     def liquidar(self, id_receita, campos):
         self.liquidadas.append((id_receita, campos))
+        gravados = {k: v for k, v in campos.items() if k not in self.ignorar}
+        self.receitas[id_receita].update(gravados, liquidado_rec="Sim")
 
     def desliquidar(self, id_receita):
         self.desliquidadas.append(id_receita)
@@ -71,6 +74,21 @@ class TestRegra(unittest.TestCase):
         self.assertEqual(campos["valor_pago"], "100.00")
         self.assertEqual(campos["data_pagamento"], "2026-10-11")
         self.assertIn("pay_1", campos["obs_pagamento"])
+        self.assertEqual(campos["valor_taxa"], "1.99")
+        self.assertIs(r["taxa_gravada"], True)
+
+    def test_avisa_quando_vhsys_nao_grava_a_taxa(self):
+        v = VhsysFalso([receita(10)], ignorar={"valor_taxa"})
+        r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual(r["resultado"], "liquidada")
+        self.assertIs(r["taxa_gravada"], False)
+
+    def test_sem_taxa_nao_envia_o_campo(self):
+        v = VhsysFalso([receita(10)])
+        r = baixa.processar_evento(evento(externalReference="10", netValue=100.0), v,
+                                   AsaasFalso())
+        self.assertNotIn("valor_taxa", v.liquidadas[0][1])
+        self.assertNotIn("taxa_gravada", r)
 
     def test_pagamento_com_juros_mantem_valor_original(self):
         v = VhsysFalso([receita(10)])
