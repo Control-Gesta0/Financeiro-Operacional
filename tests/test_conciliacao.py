@@ -191,6 +191,27 @@ class TestMontar(unittest.TestCase):
         self.assertIn("Taxas das cobranças sem baixa: 1 · R$ -1,99", t)
         self.assertIn("Taxas sem cobrança vinculada: 1 · R$ -1,00", t)
 
+    def test_taxas_de_cobranca_baixada_a_mao(self):
+        # Caso real de 21/09/2026: NBO PARTICIPACOES, receita já baixada à mão.
+        def dia(taxa):
+            v = Vhsys([receita(140331048, "Sim", "baixa manual", valor="197.00", taxa=taxa)])
+            a = Asaas([mov("PAYMENT_RECEIVED", 197.0, 784.74, "pay_nbo"),
+                       mov("PAYMENT_FEE", -1.85, 782.89, "pay_nbo", "Taxa do Pix"),
+                       mov("PAYMENT_MESSAGING_NOTIFICATION_FEE", -0.99, 781.90, "pay_nbo",
+                           "Taxa de mensageria")],
+                      {"pay_nbo": {"id": "pay_nbo", "externalReference": "140331048"}})
+            return conciliar.montar(DIA, v, a)
+
+        sem_taxa = dia(None)
+        t = conciliar.texto(sem_taxa)
+        self.assertIn("✅ 1 já estavam baixados no VHSYS", t)
+        self.assertIn("Taxas de cobranças baixadas à mão, sem a taxa na receita: 2 · R$ -2,84", t)
+        self.assertNotIn("cobranças sem baixa", t)
+
+        com_taxa = dia("2.84")
+        self.assertEqual(com_taxa["taxas_lancadas"], {"qtd": 2, "total": "2.84"})
+        self.assertNotIn("Ainda não lançados", conciliar.texto(com_taxa))
+
     def test_dia_sem_movimento(self):
         r = conciliar.montar(DIA, Vhsys([]), Asaas([]))
         self.assertIn("Sem movimento", conciliar.texto(r))
