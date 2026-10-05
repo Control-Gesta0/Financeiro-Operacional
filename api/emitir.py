@@ -3,6 +3,9 @@
 Chamado pelo cron da Vercel a cada 15 minutos (vercel.json). Só grava quando
 EMISSAO_MODO=ativo; antes disso, e em qualquer chamada manual sem aplicar=1, é prévia.
 
+Depois de emitir, manda o boleto ao cliente pelo WhatsApp (etapa "boleto" de
+cobranca_whatsapp), só com WHATSAPP_COBRANCA_MODO=ativo e, no cron, em horário comercial.
+
 Uso manual (com a CRON_SECRET em ?chave=):
     ?chave=...                    prévia: mostra o que seria emitido
     ?chave=...&desde=AAAA-MM-DD   prévia a partir de outra data de cadastro
@@ -20,6 +23,7 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
 import asaas_api  # noqa: E402
 from autorizacao import autorizado_cron  # noqa: E402
+import cobranca_whatsapp  # noqa: E402
 import emissao  # noqa: E402
 import vhsys_api  # noqa: E402
 
@@ -65,6 +69,25 @@ class handler(BaseHTTPRequestHandler):
             motivo = f"{type(e).__name__}: {e}"
             print(json.dumps({"emissao": "erro_inesperado", "motivo": motivo}, ensure_ascii=False))
             return self._responder(500, {"erro": motivo})
-        print(json.dumps({"emissao": resultado["resumo"], "aplicado": aplicar},
+        if not diagnostico:
+            resultado["whatsapp"] = self._whatsapp(pediu_aplicar, do_cron, desde)
+        print(json.dumps({"emissao": resultado["resumo"], "aplicado": aplicar,
+                          "whatsapp": resultado.get("whatsapp", {}).get("resumo")},
                          ensure_ascii=False))
         self._responder(200, resultado)
+
+    def _whatsapp(self, pediu_aplicar, do_cron, desde):
+        """Envio do boleto ao cliente; um erro aqui não desfaz nem esconde a emissão."""
+        enviar = cobranca_whatsapp.modo() == "ativo" and (pediu_aplicar or do_cron)
+        if do_cron and not enviar:
+            return {"modo": "simulacao"}  # no cron, sem envio ligado, nem consulta
+        if enviar and not cobranca_whatsapp.em_horario_comercial():
+            return {"adiado": "fora do horário comercial; sai no primeiro cron das "
+                              f"{cobranca_whatsapp.ENVIO_DAS}h"}
+        try:
+            return cobranca_whatsapp.cobrar(vhsys_api, asaas_api, ("boleto",), aplicar=enviar,
+                                            desde=None if enviar else desde)
+        except Exception as e:  # registra e segue: a emissão já foi feita
+            motivo = f"{type(e).__name__}: {e}"
+            print(json.dumps({"whatsapp": "erro", "motivo": motivo}, ensure_ascii=False))
+            return {"erro": motivo}

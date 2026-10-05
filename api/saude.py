@@ -8,8 +8,8 @@ import os
 from http.server import BaseHTTPRequestHandler
 
 VARIAVEIS = ("VHSYS_ACCESS_TOKEN", "VHSYS_SECRET_ACCESS_TOKEN", "ASAAS_API_KEY",
-             "ASAAS_WEBHOOK_TOKEN", "CRON_SECRET", "UAZAPI_URL", "UAZAPI_TOKEN",
-             "CONCILIACAO_WHATSAPP")
+             "ASAAS_WEBHOOK_TOKEN", "CRON_SECRET", "ZAPTOS_URL", "ZAPTOS_TOKEN",
+             "UAZAPI_URL", "UAZAPI_TOKEN", "CONCILIACAO_WHATSAPP")
 
 
 class handler(BaseHTTPRequestHandler):
@@ -21,6 +21,8 @@ class handler(BaseHTTPRequestHandler):
             "emissao_modo": "ativo" if os.environ.get("EMISSAO_MODO", "").strip().lower() == "ativo"
             else "simulacao",
             "emissao_a_partir_de": os.environ.get("EMISSAO_A_PARTIR_DE") or None,
+            "whatsapp_cobranca_modo": "ativo" if os.environ.get(
+                "WHATSAPP_COBRANCA_MODO", "").strip().lower() == "ativo" else "simulacao",
             "credenciais": {v: bool(os.environ.get(v)) for v in VARIAVEIS},
         }).encode()
         self.send_response(200)
