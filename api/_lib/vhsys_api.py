@@ -189,3 +189,25 @@ def liquidar_despesa(id_despesa, valor, data):
         raise ErroVhsys(f"liquidar despesa {id_despesa}: "
                         f"{json.dumps(corpo, ensure_ascii=False)[:300]}")
     return corpo
+
+
+# ------------------------------------------------------------------ emissão
+def receitas_modificadas_desde(data):
+    """Receitas em aberto criadas ou modificadas a partir da data (YYYY-MM-DD)."""
+    return _todas({"liquidado": "Nao", "lixeira": "Nao", "data_modificacao": data})
+
+
+def consultar_cliente(id_cliente):
+    corpo = _chamar("GET", f"/clientes/{urllib.parse.quote(str(id_cliente))}")
+    if not corpo or corpo.get("status") != "success":
+        return None
+    dados = corpo.get("data")
+    return dados[0] if isinstance(dados, list) else dados or None
+
+
+def atualizar_receita(id_receita, campos):
+    corpo = _chamar("PUT", f"/contas-receber/{id_receita}", body=campos)
+    if not corpo or corpo.get("status") != "success":
+        raise ErroVhsys(f"atualizar receita {id_receita}: "
+                        f"{json.dumps(corpo, ensure_ascii=False)[:300]}")
+    return corpo

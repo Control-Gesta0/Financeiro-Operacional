@@ -67,3 +67,44 @@ def listar_extrato(data):
 
 def consultar_cobranca(id_cobranca):
     return _get(f"/payments/{urllib.parse.quote(id_cobranca)}")
+
+
+def _enviar(metodo, caminho, corpo):
+    if not configurado():
+        raise ErroAsaas("ASAAS_API_KEY não configurada")
+    req = urllib.request.Request(
+        f"{BASE_URL}{caminho}", method=metodo, data=json.dumps(corpo).encode(),
+        headers={"access_token": os.environ["ASAAS_API_KEY"], "Content-Type": "application/json",
+                 "User-Agent": "FinanceiroOperacional/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise ErroAsaas(f"{metodo} {caminho}: HTTP {e.code} {e.read()[:300]!r}") from e
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        raise ErroAsaas(f"{metodo} {caminho}: {e}") from e
+
+
+# ------------------------------------------------------------------ emissão
+def buscar_cliente_por_documento(cpf_cnpj):
+    corpo = _get("/customers", {"cpfCnpj": cpf_cnpj, "limit": 10})
+    clientes = [c for c in (corpo or {}).get("data") or [] if not c.get("deleted")]
+    return clientes[0] if clientes else None
+
+
+def criar_cliente(dados):
+    return _enviar("POST", "/customers", dados)
+
+
+def atualizar_cliente(id_cliente, dados):
+    return _enviar("POST", f"/customers/{urllib.parse.quote(id_cliente)}", dados)
+
+
+def buscar_cobranca_por_referencia(referencia):
+    corpo = _get("/payments", {"externalReference": referencia, "limit": 10})
+    cobrancas = [c for c in (corpo or {}).get("data") or [] if not c.get("deleted")]
+    return cobrancas[0] if cobrancas else None
+
+
+def criar_cobranca(dados):
+    return _enviar("POST", "/payments", dados)
