@@ -65,7 +65,7 @@ def localizar_receita(pagamento, vhsys, asaas):
                   f"{vencimento}" + (f" para {cliente['name']}" if cliente else ""))
 
 
-def campos_baixa(pagamento, receita):
+def campos_baixa(pagamento, receita, taxa=None):
     """Campos do PUT de liquidação. valor_rec mantém o valor original do título."""
     campos = {
         "valor_rec": _valor(receita.get("valor_rec")),
@@ -78,7 +78,6 @@ def campos_baixa(pagamento, receita):
     }
     # Taxa do Asaas no próprio título: o VHSYS a apresenta na categoria de taxas de
     # cobrança (30.01.10), sem precisar de uma despesa separada.
-    taxa = taxa_cobranca(pagamento)
     if taxa:
         campos["valor_taxa"] = taxa
     if os.environ.get("VHSYS_ID_BANCO_ASAAS"):
@@ -86,12 +85,25 @@ def campos_baixa(pagamento, receita):
     return campos
 
 
-def taxa_cobranca(pagamento):
-    """Taxa cobrada pelo Asaas (valor bruto − líquido), ou None se não houver."""
+def taxa_cobranca(pagamento, asaas=None):
+    """Taxas do Asaas da cobrança e de onde vieram: ("2.84", "extrato") ou
+    ("1.85", "valor_liquido"), ou (None, None) se não houver taxa.
+
+    O webhook só traz a taxa principal (bruto − líquido). A de mensageria é lançada à
+    parte no extrato, por isso a soma vem do extrato do dia do crédito quando ele já
+    tiver as linhas daquela cobrança. Todas vão juntas no valor_taxa (30.01.10).
+    """
+    pid, data = pagamento.get("id"), pagamento.get("paymentDate")
+    if asaas is not None and pid and data and asaas.configurado():
+        linhas = [m for m in asaas.listar_extrato(data)
+                  if m.get("paymentId") == pid and "FEE" in (m.get("type") or "")]
+        if linhas:
+            total = sum((abs(Decimal(str(m.get("value") or 0))) for m in linhas), Decimal(0))
+            return (f"{total:.2f}", "extrato") if total > 0 else (None, None)
     if pagamento.get("netValue") is None:
-        return None
+        return None, None
     taxa = Decimal(str(pagamento.get("value") or 0)) - Decimal(str(pagamento["netValue"]))
-    return f"{taxa:.2f}" if taxa > 0 else None
+    return (f"{taxa:.2f}", "valor_liquido") if taxa > 0 else (None, None)
 
 
 def processar_evento(evento, vhsys, asaas):
@@ -122,7 +134,8 @@ def processar_evento(evento, vhsys, asaas):
     if tipo in EVENTOS_BAIXA:
         if liquidada:
             return {**base, "resultado": "ja_liquidada"}
-        campos = campos_baixa(pagamento, receita)
+        taxa, base["taxa_origem"] = taxa_cobranca(pagamento, asaas)
+        campos = campos_baixa(pagamento, receita, taxa)
         if base["modo"] != "ativo":
             return {**base, "resultado": "liquidada", "campos": campos}
         vhsys.liquidar(receita["id_conta_rec"], campos)
