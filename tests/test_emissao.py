@@ -26,10 +26,11 @@ class ErroAsaasFalso(Exception):
 
 
 class Vhsys:
-    def __init__(self, receitas, clientes, ignora_obs=False):
+    def __init__(self, receitas, clientes, ignora_obs=False, ignora=()):
         self.receitas = {r["id_conta_rec"]: dict(r) for r in receitas}
         self.clientes = clientes
         self.ignora_obs = ignora_obs
+        self.ignora = set(ignora)  # campos que o VHSYS falso não grava
         self.atualizacoes = []
 
     def receitas_modificadas_desde(self, data):
@@ -43,14 +44,16 @@ class Vhsys:
 
     def atualizar_receita(self, id_receita, campos):
         self.atualizacoes.append((id_receita, campos))
-        if not self.ignora_obs:
-            self.receitas[id_receita].update(campos)
+        if self.ignora_obs and "observacoes_rec" in campos:
+            return
+        self.receitas[id_receita].update({k: v for k, v in campos.items() if k not in self.ignora})
 
 
 class Asaas:
     ErroAsaas = ErroAsaasFalso
 
-    def __init__(self, clientes=None, cobrancas=None, recusar_cpf=None):
+    def __init__(self, clientes=None, cobrancas=None, recusar_cpf=None, sem_pix=False):
+        self.sem_pix = sem_pix
         self.clientes = clientes or []
         self.cobrancas = cobrancas or []
         self.recusar_cpf = recusar_cpf
@@ -72,6 +75,11 @@ class Asaas:
 
     def buscar_cobranca_por_referencia(self, ref):
         return next((c for c in self.cobrancas if c["externalReference"] == ref), None)
+
+    def pix_qrcode(self, id_cobranca):
+        if self.sem_pix:
+            raise ErroAsaasFalso("HTTP 400 conta sem chave Pix")
+        return {"payload": f"00020126PIX-{id_cobranca}", "encodedImage": "..."}
 
     def criar_cobranca(self, dados):
         n = len(self.cobrancas) + 1
@@ -137,6 +145,39 @@ class TestEmissao(unittest.TestCase):
         self.assertIn("pay_old", v.receitas[1]["observacoes_rec"])
         # Rodar de novo: a receita já tem a cobrança nas observações e sai do escopo.
         self.assertEqual(rodar(v, a)["resultados"], [])
+
+    def test_grava_forma_link_e_pix_na_receita(self):
+        v, a = Vhsys([receita(1)], {77: CLIENTE}), Asaas()
+        res = rodar(v, a)["resultados"][0]
+        cb = res["campos_boleto"]
+        self.assertEqual(cb["enviados"], {"forma_pagamento": "Boleto",
+                                          "link_boleto": "https://www.asaas.com/b/pdf/novo1",
+                                          "brcode": "00020126PIX-pay_novo1"})
+        self.assertEqual(cb["gravados"], {"forma_pagamento": True, "link_boleto": True,
+                                          "brcode": True})
+        self.assertEqual(v.receitas[1]["forma_pagamento"], "Boleto")
+
+    def test_informa_campo_por_campo_o_que_o_vhsys_ignorou(self):
+        v = Vhsys([receita(1)], {77: CLIENTE}, ignora={"link_boleto", "brcode"})
+        cb = rodar(v, Asaas())["resultados"][0]["campos_boleto"]
+        self.assertEqual(cb["gravados"], {"forma_pagamento": True, "link_boleto": False,
+                                          "brcode": False})
+
+    def test_conta_sem_pix_grava_so_o_boleto(self):
+        cb = rodar(Vhsys([receita(1)], {77: CLIENTE}), Asaas(sem_pix=True))["resultados"][0]
+        self.assertNotIn("brcode", cb["campos_boleto"]["enviados"])
+
+    def test_sincroniza_receita_ja_emitida(self):
+        a = Asaas(cobrancas=[{"id": "pay_neo", "externalReference": "141190190",
+                              "bankSlipUrl": "https://www.asaas.com/b/pdf/neo"}])
+        v = Vhsys([receita(141190190, obs="Cobrança Asaas pay_neo")], {77: CLIENTE})
+        previa = emissao.sincronizar_receita(141190190, v, a, aplicar=False)
+        self.assertEqual((previa["resultado"], v.atualizacoes), ("seria_sincronizada", []))
+        r = emissao.sincronizar_receita(141190190, v, a, aplicar=True)
+        self.assertEqual(r["resultado"], "sincronizada")
+        self.assertEqual(v.receitas[141190190]["link_boleto"], "https://www.asaas.com/b/pdf/neo")
+        self.assertEqual(emissao.sincronizar_receita(5, v, a, aplicar=True)["resultado"],
+                         "sem_cobranca")
 
     def test_avisa_quando_o_vhsys_nao_grava_a_observacao(self):
         v, a = Vhsys([receita(1)], {77: CLIENTE}, ignora_obs=True), Asaas()
@@ -234,6 +275,9 @@ class TestRota(unittest.TestCase):
         status, corpo = self.get("?chave=cron&aplicar=1")
         self.assertEqual(status, 409)
         self.assertIn("EMISSAO_MODO=ativo", corpo["erro"])
+
+    def test_receita_invalida(self):
+        self.assertEqual(self.get("?chave=cron&receita=abc")[0], 400)
 
     def test_previa_sem_data_de_inicio_pede_a_data(self):
         status, corpo = self.get("?chave=cron")

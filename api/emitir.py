@@ -8,6 +8,8 @@ Uso manual (com a CRON_SECRET em ?chave=):
     ?chave=...&desde=AAAA-MM-DD   prévia a partir de outra data de cadastro
     ?chave=...&aplicar=1          emite de verdade (exige EMISSAO_MODO=ativo)
     ?chave=...&diagnostico=1      prévia que lista também as receitas ignoradas e o motivo
+    ?chave=...&receita=ID         prévia da sincronização dos campos de boleto de uma
+                                  receita já emitida (com &aplicar=1 grava)
 """
 import json
 import os
@@ -43,7 +45,15 @@ class handler(BaseHTTPRequestHandler):
         diagnostico = (params.get("diagnostico") or ["0"])[0] == "1"
         aplicar = emissao.modo() == "ativo" and (pediu_aplicar or do_cron) and not diagnostico
         desde = None if aplicar else (params.get("desde") or [None])[0]
+        id_receita = (params.get("receita") or [""])[0]
         try:
+            if id_receita:
+                if not id_receita.isdigit():
+                    return self._responder(400, {"erro": "receita deve ser o número da receita"})
+                resultado = emissao.sincronizar_receita(int(id_receita), vhsys_api, asaas_api,
+                                                        aplicar=aplicar)
+                print(json.dumps({"sincronizar": resultado}, ensure_ascii=False))
+                return self._responder(200, resultado)
             resultado = emissao.emitir(vhsys_api, asaas_api, aplicar=aplicar, desde=desde,
                                        diagnostico=diagnostico)
         except ValueError as e:

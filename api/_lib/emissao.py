@@ -121,6 +121,47 @@ def observacao_com_cobranca(receita, cobranca):
     return f"{atual}\n{linha}" if atual else linha
 
 
+def campos_boleto(cobranca, asaas):
+    """Campos de boleto da receita (os que a API do VHSYS mostra): forma de pagamento,
+    link do boleto e Pix copia e cola. A gravação é conferida campo a campo."""
+    campos = {"forma_pagamento": "Boleto",
+              "link_boleto": cobranca.get("bankSlipUrl") or cobranca.get("invoiceUrl")}
+    try:
+        pix = asaas.pix_qrcode(cobranca["id"]) or {}
+        if pix.get("payload"):
+            campos["brcode"] = pix["payload"]
+    except getattr(asaas, "ErroAsaas", ValueError):
+        pass  # conta sem chave Pix: segue só com o boleto
+    return {k: v for k, v in campos.items() if v}
+
+
+def gravar_campos_boleto(id_receita, cobranca, vhsys, asaas):
+    """Tenta gravar os campos de boleto e devolve o que o VHSYS de fato guardou."""
+    campos = campos_boleto(cobranca, asaas)
+    try:
+        vhsys.atualizar_receita(id_receita, campos)
+    except getattr(vhsys, "ErroVhsys", ValueError) as e:
+        return {"enviados": campos, "erro": str(e)}
+    relida = vhsys.consultar_receita(id_receita) or {}
+    return {"enviados": campos,
+            "gravados": {k: (str(relida.get(k) or "") == str(v)) for k, v in campos.items()}}
+
+
+def sincronizar_receita(id_receita, vhsys, asaas, aplicar):
+    """Para uma receita já emitida: busca a cobrança pelo ID da receita e grava os
+    campos de boleto (útil para as emitidas antes desse recurso)."""
+    cobranca = asaas.buscar_cobranca_por_referencia(str(id_receita))
+    if not cobranca:
+        return {"receita": id_receita, "resultado": "sem_cobranca",
+                "motivo": "nenhuma cobrança no Asaas com essa receita como referência"}
+    base = {"receita": id_receita, "cobranca": cobranca.get("id")}
+    if not aplicar:
+        return {**base, "resultado": "seria_sincronizada",
+                "campos": campos_boleto(cobranca, asaas)}
+    return {**base, "resultado": "sincronizada",
+            "campos_boleto": gravar_campos_boleto(id_receita, cobranca, vhsys, asaas)}
+
+
 def emitir_receita(receita, vhsys, asaas, aplicar):
     id_receita = receita.get("id_conta_rec")
     base = {"receita": id_receita, "cliente": receita.get("nome_cliente"),
@@ -141,6 +182,7 @@ def emitir_receita(receita, vhsys, asaas, aplicar):
         vhsys.atualizar_receita(id_receita, {"observacoes_rec": observacao_com_cobranca(receita, cobranca)})
         relida = vhsys.consultar_receita(id_receita) or {}
         base["link_gravado"] = cobranca.get("id", "") in (relida.get("observacoes_rec") or "")
+        base["campos_boleto"] = gravar_campos_boleto(id_receita, cobranca, vhsys, asaas)
     return base
 
 
