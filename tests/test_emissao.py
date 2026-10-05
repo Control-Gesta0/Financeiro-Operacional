@@ -157,6 +157,18 @@ class TestEmissao(unittest.TestCase):
         r = rodar(v, a)
         self.assertEqual((r["resultados"], a.cobrancas_criadas), ([], []))
 
+    def test_diagnostico_mostra_as_ignoradas_com_o_motivo(self):
+        v = Vhsys([receita(1, banco="999"), receita(2, cad="2026-09-30 10:00:00")], {77: CLIENTE})
+        r = emissao.emitir(v, Asaas(), desde=DESDE, dia=HOJE, diagnostico=True)
+        self.assertEqual({x["receita"]: x["motivo"] for x in r["ignoradas"]},
+                         {1: "outra conta bancária", 2: "cadastrada antes do início da emissão"})
+        self.assertEqual(r["conta_asaas"], "1320902")
+
+    def test_aceita_data_no_formato_brasileiro(self):
+        v, a = Vhsys([receita(1, cad="05/10/2026 09:00", venc="20/10/2026")], {77: CLIENTE}), Asaas()
+        r = rodar(v, a, aplicar=False)
+        self.assertEqual(r["resumo"], {"seria_emitida": 1})
+
     def test_vencida_e_valor_zerado_aparecem_como_nao_emitidas(self):
         v = Vhsys([receita(1, venc="2026-10-01"), receita(2, valor="0.00")], {77: CLIENTE})
         r = rodar(v, Asaas())

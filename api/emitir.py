@@ -7,6 +7,7 @@ Uso manual (com a CRON_SECRET em ?chave=):
     ?chave=...                    prévia: mostra o que seria emitido
     ?chave=...&desde=AAAA-MM-DD   prévia a partir de outra data de cadastro
     ?chave=...&aplicar=1          emite de verdade (exige EMISSAO_MODO=ativo)
+    ?chave=...&diagnostico=1      prévia que lista também as receitas ignoradas e o motivo
 """
 import json
 import os
@@ -39,10 +40,12 @@ class handler(BaseHTTPRequestHandler):
         if pediu_aplicar and emissao.modo() != "ativo":
             return self._responder(409, {"erro": "a emissão está em simulação: crie "
                                                  "EMISSAO_MODO=ativo na Vercel antes de aplicar"})
-        aplicar = emissao.modo() == "ativo" and (pediu_aplicar or do_cron)
+        diagnostico = (params.get("diagnostico") or ["0"])[0] == "1"
+        aplicar = emissao.modo() == "ativo" and (pediu_aplicar or do_cron) and not diagnostico
         desde = None if aplicar else (params.get("desde") or [None])[0]
         try:
-            resultado = emissao.emitir(vhsys_api, asaas_api, aplicar=aplicar, desde=desde)
+            resultado = emissao.emitir(vhsys_api, asaas_api, aplicar=aplicar, desde=desde,
+                                       diagnostico=diagnostico)
         except ValueError as e:
             return self._responder(400, {"erro": str(e)})
         except (vhsys_api.ErroVhsys, asaas_api.ErroAsaas) as e:
