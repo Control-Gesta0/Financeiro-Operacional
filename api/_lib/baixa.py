@@ -67,9 +67,22 @@ def campos_baixa(pagamento, receita):
                           f"({pagamento.get('billingType')}). Pago R$ {_valor(pagamento.get('value'))}, "
                           f"líquido R$ {_valor(pagamento.get('netValue'))}."),
     }
+    # Taxa do Asaas no próprio título: o VHSYS a apresenta na categoria de taxas de
+    # cobrança (30.01.10), sem precisar de uma despesa separada.
+    taxa = taxa_cobranca(pagamento)
+    if taxa:
+        campos["valor_taxa"] = taxa
     if os.environ.get("VHSYS_ID_BANCO_ASAAS"):
         campos["id_banco"] = os.environ["VHSYS_ID_BANCO_ASAAS"]
     return campos
+
+
+def taxa_cobranca(pagamento):
+    """Taxa cobrada pelo Asaas (valor bruto − líquido), ou None se não houver."""
+    if pagamento.get("netValue") is None:
+        return None
+    taxa = Decimal(str(pagamento.get("value") or 0)) - Decimal(str(pagamento["netValue"]))
+    return f"{taxa:.2f}" if taxa > 0 else None
 
 
 def processar_evento(evento, vhsys, asaas):
@@ -98,9 +111,15 @@ def processar_evento(evento, vhsys, asaas):
         if liquidada:
             return {**base, "resultado": "ja_liquidada"}
         campos = campos_baixa(pagamento, receita)
-        if base["modo"] == "ativo":
-            vhsys.liquidar(receita["id_conta_rec"], campos)
-        return {**base, "resultado": "liquidada", "campos": campos}
+        if base["modo"] != "ativo":
+            return {**base, "resultado": "liquidada", "campos": campos}
+        vhsys.liquidar(receita["id_conta_rec"], campos)
+        resultado = {**base, "resultado": "liquidada", "campos": campos}
+        if "valor_taxa" in campos:
+            # A doc do VHSYS não lista valor_taxa na liquidação: confere se gravou.
+            gravada = vhsys.consultar_receita(receita["id_conta_rec"]) or {}
+            resultado["taxa_gravada"] = _valor(gravada.get("valor_taxa")) == campos["valor_taxa"]
+        return resultado
 
     if not liquidada:
         return {**base, "resultado": "ja_em_aberto"}

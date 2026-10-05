@@ -49,10 +49,11 @@ class Asaas:
         return self.clientes.get(id_)
 
 
-def receita(id_, liquidado="Nao", obs="", valor="100.00", venc="2026-10-10", data_pag=None):
+def receita(id_, liquidado="Nao", obs="", valor="100.00", venc="2026-10-10", data_pag=None,
+            taxa=None):
     return {"id_conta_rec": id_, "liquidado_rec": liquidado, "obs_pagamento": obs,
             "valor_rec": valor, "valor_pago": valor, "vencimento_rec": venc,
-            "nome_cliente": "Cliente", "data_pagamento": data_pag}
+            "nome_cliente": "Cliente", "data_pagamento": data_pag, "valor_taxa": taxa}
 
 
 def mov(tipo, valor, saldo, pid=None, desc=""):
@@ -65,7 +66,7 @@ DIA = "2026-10-11"
 class TestMontar(unittest.TestCase):
     def setUp(self):
         self.vhsys = Vhsys([
-            receita(1, "Sim", "Baixa automática Asaas pay_1 (PIX).", data_pag=DIA),
+            receita(1, "Sim", "Baixa automática Asaas pay_1 (PIX).", data_pag=DIA, taxa="1.99"),
             receita(2),                                   # aberta, achada por externalReference
             receita(3, valor="50.00"), receita(4, valor="50.00"),  # ambíguas
             receita(5, "Sim", "baixa feita à mão"),       # baixada fora da integração
@@ -79,7 +80,8 @@ class TestMontar(unittest.TestCase):
              mov("PAYMENT_FEE", -1.99, 348.01, "pay_1"),
              mov("PAYMENT_FEE", -1.99, 346.02, "pay_2"),
              mov("TRANSFER", -300, 46.02),
-             mov("CREDIT", 5, 51.02, desc="Bônus")],
+             mov("TRANSFER_FEE", -1, 45.02),
+             mov("CREDIT", 5, 50.02, desc="Bônus")],
             {"pay_2": {"id": "pay_2", "externalReference": "2"},
              "pay_3": {"id": "pay_3", "value": 50, "dueDate": "2026-10-10"},
              "pay_5": {"id": "pay_5", "externalReference": "5"}})
@@ -93,8 +95,10 @@ class TestMontar(unittest.TestCase):
         self.assertEqual(self.status(r), {"pay_1": "baixado", "pay_2": "simulado",
                                           "pay_3": "pendente", "pay_5": "manual"})
         self.assertEqual([x["receita"] for x in r["baixas_sem_credito"]], [6])
-        self.assertEqual(r["qtd"], {"recebimento": 4, "taxa": 2, "transferencia": 1, "outro": 1})
-        self.assertEqual(r["saldo_final"], 51.02)
+        self.assertEqual(r["qtd"], {"recebimento": 4, "taxa": 1, "transferencia": 1, "outro": 1})
+        self.assertEqual(r["taxas_lancadas"], {"qtd": 1, "total": "1.99"})
+        self.assertEqual(r["taxas_simuladas"], {"qtd": 1, "total": "1.99"})
+        self.assertEqual(r["saldo_final"], 50.02)
         t = conciliar.texto(r)
         self.assertIn("Conciliação Asaas · 11/10/2026", t)
         self.assertIn("Recebimentos: 4 · R$ 350,00", t)
@@ -104,10 +108,12 @@ class TestMontar(unittest.TestCase):
         self.assertIn("receita 2 (externalReference)", t)
         self.assertIn("🔴 1 sem baixa", t)
         self.assertIn("2 receitas em aberto", t)
-        self.assertIn("Taxas: 2 · R$ -3,98", t)
+        self.assertIn("Taxas de cobrança lançadas nas receitas (30.01.10): 1 · R$ 1,99", t)
+        self.assertIn("🟡 1 taxas · R$ 1,99 seriam lançadas nas receitas (simulação)", t)
+        self.assertIn("Taxas sem cobrança vinculada: 1 · R$ -1,00", t)
         self.assertIn("Transferências e Pix enviados: 1 · R$ -300,00", t)
         self.assertIn("Bônus", t)
-        self.assertIn("Saldo Asaas no fim do dia: R$ 51,02", t)
+        self.assertIn("Saldo Asaas no fim do dia: R$ 50,02", t)
         self.assertNotIn("—", t)
 
     def test_ativo_receita_aberta_vira_pendencia(self):
@@ -115,6 +121,15 @@ class TestMontar(unittest.TestCase):
             r = conciliar.montar(DIA, self.vhsys, self.asaas)
         self.assertEqual(self.status(r)["pay_2"], "pendente")
         self.assertNotIn("seriam baixados", conciliar.texto(r))
+
+    def test_taxa_nao_gravada_na_receita_baixada(self):
+        v = Vhsys([receita(1, "Sim", "Baixa automática Asaas pay_1 (PIX).", data_pag=DIA)])
+        a = Asaas([mov("PAYMENT_RECEIVED", 100, 100, "pay_1"),
+                   mov("PAYMENT_FEE", -1.99, 98.01, "pay_1")])
+        r = conciliar.montar(DIA, v, a)
+        self.assertEqual(r["taxas_divergentes"],
+                         [{"receita": 1, "pagamento": "pay_1", "valor": "1.99"}])
+        self.assertIn("🔴 1 receitas baixadas sem a taxa gravada", conciliar.texto(r))
 
     def test_dia_sem_movimento(self):
         r = conciliar.montar(DIA, Vhsys([]), Asaas([]))

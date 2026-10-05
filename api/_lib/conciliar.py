@@ -55,6 +55,11 @@ def conferir_recebimento(mov, liquidadas, vhsys, asaas):
             "motivo": None if estado == "simulado" else "receita ainda em aberto no VHSYS"}
 
 
+def _resumo(movs):
+    return {"qtd": len(movs),
+            "total": str(sum((abs(Decimal(str(m.get("value") or 0))) for m in movs), Decimal(0)))}
+
+
 def montar(data, vhsys, asaas):
     extrato = asaas.listar_extrato(data)
     liquidadas = vhsys.listar_liquidadas(data)
@@ -67,6 +72,24 @@ def montar(data, vhsys, asaas):
         recebimentos.append({**conferir_recebimento(mov, liquidadas, vhsys, asaas),
                              "pagamento": mov.get("paymentId"), "valor": mov.get("value"),
                              "descricao": mov.get("description")})
+
+    # Taxas de cobrança: gravadas no valor_taxa da receita (categoria 30.01.10 no VHSYS).
+    status_por_pid = {x["pagamento"]: x["status"] for x in recebimentos}
+    taxas = {"lancada": [], "simulada": [], "divergente": [], "a_lancar": []}
+    for m in grupos.pop("taxa", []):
+        pid = m.get("paymentId") or ""
+        receita = next((r for r in liquidadas if pid and pid in (r.get("obs_pagamento") or "")), None)
+        valor = abs(Decimal(str(m.get("value") or 0)))
+        if receita and Decimal(str(receita.get("valor_taxa") or 0)) == valor:
+            taxas["lancada"].append(m)
+        elif receita:
+            taxas["divergente"].append({**m, "receita": receita.get("id_conta_rec")})
+        elif status_por_pid.get(pid) == "simulado":
+            taxas["simulada"].append(m)
+        else:
+            taxas["a_lancar"].append(m)
+    if taxas["a_lancar"]:
+        grupos["taxa"] = taxas["a_lancar"]
 
     pagos_no_dia = {m.get("paymentId") for m in grupos["recebimento"]}
     sem_credito = [r for r in liquidadas
@@ -83,6 +106,11 @@ def montar(data, vhsys, asaas):
                    for g, movs in grupos.items()},
         "qtd": {g: len(movs) for g, movs in grupos.items()},
         "outros": [m.get("description") for m in grupos["outro"]],
+        "taxas_lancadas": _resumo(taxas["lancada"]),
+        "taxas_simuladas": _resumo(taxas["simulada"]),
+        "taxas_divergentes": [{"receita": m["receita"], "pagamento": m.get("paymentId"),
+                               "valor": str(abs(Decimal(str(m.get("value") or 0))))}
+                              for m in taxas["divergente"]],
         "saldo_final": extrato[-1].get("balance") if extrato else None,
     }
 
@@ -121,7 +149,18 @@ def texto(r):
         for x in r["baixas_sem_credito"][:MAX_ITENS]:
             linhas.append(f"• receita {x['receita']} · {x['cliente']} · {brl(x['valor'] or 0)}")
 
-    rotulos = (("taxa", "Taxas"), ("transferencia", "Transferências e Pix enviados"),
+    if r["taxas_lancadas"]["qtd"]:
+        linhas.append(f"\nTaxas de cobrança lançadas nas receitas (30.01.10): "
+                      f"{r['taxas_lancadas']['qtd']} · {brl(r['taxas_lancadas']['total'])}")
+    if r["taxas_simuladas"]["qtd"]:
+        linhas.append(f"🟡 {r['taxas_simuladas']['qtd']} taxas · {brl(r['taxas_simuladas']['total'])} "
+                      "seriam lançadas nas receitas (simulação)")
+    if r["taxas_divergentes"]:
+        linhas.append(f"🔴 {len(r['taxas_divergentes'])} receitas baixadas sem a taxa gravada:")
+        for x in r["taxas_divergentes"][:MAX_ITENS]:
+            linhas.append(f"• receita {x['receita']} · taxa {brl(x['valor'])}")
+
+    rotulos = (("taxa", "Taxas sem cobrança vinculada"), ("transferencia", "Transferências e Pix enviados"),
                ("estorno", "Estornos e chargebacks"), ("outro", "Outros movimentos"))
     a_lancar = [(rot, g) for g, rot in rotulos if r["qtd"].get(g)]
     if a_lancar:
