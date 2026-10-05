@@ -18,6 +18,9 @@ class handler(BaseHTTPRequestHandler):
             "ok": True,
             "baixa_modo": "ativo" if os.environ.get("BAIXA_MODO", "").strip().lower() == "ativo"
             else "simulacao",
+            "emissao_modo": "ativo" if os.environ.get("EMISSAO_MODO", "").strip().lower() == "ativo"
+            else "simulacao",
+            "emissao_a_partir_de": os.environ.get("EMISSAO_A_PARTIR_DE") or None,
             "credenciais": {v: bool(os.environ.get(v)) for v in VARIAVEIS},
         }).encode()
         self.send_response(200)
