@@ -16,14 +16,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api" / "_lib"))
 import vhsys_api  # noqa: E402
 
 
-def rec(id_, valor, venc, liquidado="Nao", data_pag=None, venc_original=None):
+def rec(id_, valor, venc, liquidado="Nao", data_pag=None, venc_original=None, obs=""):
     return {"id_conta_rec": id_, "valor_rec": valor, "vencimento_rec": venc,
+            "observacoes_rec": obs,
             "vencimento_original": venc_original or venc, "liquidado_rec": liquidado,
             "data_pagamento": data_pag, "nome_cliente": "J.N DOS REIS LOCACOES FESTAS E EVENTOS"}
 
 
 # Contrato mensal de R$ 828,00 (caso real de 30/09/2026) + outros títulos maiores.
-RECEITAS = [rec(1, "828.00", "2026-09-05"), rec(2, "828.00", "2026-10-05"),
+RECEITAS = [rec(1, "828.00", "2026-09-05",
+                obs="Cobranca em aberto no Asaas (pay_4r7akexz0qfrn793)."),
+            rec(2, "828.00", "2026-10-05"),
             rec(3, "828.00", "2026-11-05"), rec(4, "900.00", "2026-09-05"),
             rec(5, "828.00", "2026-08-05", venc_original="2026-09-05"),
             rec(6, "828.00", "2026-09-30", "Sim", data_pag="2026-09-30"),
@@ -83,6 +86,15 @@ class TestFiltros(unittest.TestCase):
         # A de 05/09 e a prorrogada (vencimento original 05/09); não as dos meses seguintes.
         self.assertEqual(sorted(r["id_conta_rec"] for r in achadas), [1, 5])
         self.assertEqual(VhsysAPartirDe.consultas[0]["valor_receita"], "828.00,828.00")
+
+    def test_busca_pelo_id_da_cobranca(self):
+        com_valor = vhsys_api.buscar_por_cobranca("pay_4r7akexz0qfrn793", "828.00")
+        self.assertEqual([r["id_conta_rec"] for r in com_valor], [1])
+        self.assertEqual(VhsysAPartirDe.consultas[0]["valor_receita"], "828.00,828.00")
+        sem_valor = vhsys_api.buscar_por_cobranca("pay_4r7akexz0qfrn793")
+        self.assertEqual([r["id_conta_rec"] for r in sem_valor], [1])
+        self.assertEqual(vhsys_api.buscar_por_cobranca("pay_inexistente", "828.00"), [])
+        self.assertEqual(vhsys_api.buscar_por_cobranca("pay_4r7akexz0qfrn79", "828.00"), [])
 
     def test_liquidadas_so_do_dia(self):
         achadas = vhsys_api.listar_liquidadas("2026-09-30")

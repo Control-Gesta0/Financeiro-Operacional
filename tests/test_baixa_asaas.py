@@ -32,6 +32,12 @@ class VhsysFalso:
         return [r for r in self.receitas.values() if r["liquidado_rec"] == "Nao"
                 and r["valor_rec"] == valor and r["vencimento_rec"] == vencimento]
 
+    def buscar_por_cobranca(self, id_cobranca, valor=None):
+        return [r for r in self.receitas.values()
+                if id_cobranca in (r.get("observacoes_rec") or "")
+                and (valor is not None or r["liquidado_rec"] == "Nao")
+                and (valor is None or r["valor_rec"] == valor)]
+
     def liquidar(self, id_receita, campos):
         self.liquidadas.append((id_receita, campos))
         gravados = {k: v for k, v in campos.items() if k not in self.ignorar}
@@ -49,9 +55,10 @@ class AsaasFalso:
         return self.clientes.get(id_cliente)
 
 
-def receita(id_, valor="100.00", venc="2026-10-10", cliente="José da Silva", liquidado="Nao"):
+def receita(id_, valor="100.00", venc="2026-10-10", cliente="José da Silva", liquidado="Nao",
+            obs=""):
     return {"id_conta_rec": id_, "valor_rec": valor, "vencimento_rec": venc,
-            "nome_cliente": cliente, "liquidado_rec": liquidado}
+            "nome_cliente": cliente, "liquidado_rec": liquidado, "observacoes_rec": obs}
 
 
 def evento(tipo="PAYMENT_RECEIVED", **pagamento):
@@ -114,6 +121,26 @@ class TestRegra(unittest.TestCase):
         r = baixa.processar_evento(evento(externalReference="99"), v, AsaasFalso())
         self.assertEqual(r["resultado"], "nao_conciliado")
         self.assertEqual(v.liquidadas, [])
+
+    def test_acha_pelo_id_da_cobranca_nas_observacoes(self):
+        # Caso real de 30/09/2026: J.N DOS REIS, receita vence 29/09 e a cobrança 05/09.
+        obs = "Cobranca em aberto no Asaas (pay_4r7akexz0qfrn793). Cobrança de P 1402"
+        v = VhsysFalso([receita(140738277, "828.00", "2026-09-29", obs=obs),
+                        receita(2, "828.00", "2026-10-29")])
+        p = {"id": "pay_4r7akexz0qfrn793", "value": 828.0, "dueDate": "2026-09-05"}
+        r = baixa.processar_evento(evento(**p), v, AsaasFalso())
+        self.assertEqual((r["resultado"], r["receita"]), ("liquidada", 140738277))
+        self.assertEqual(r["localizada_por"], "id da cobrança nas observações")
+
+    def test_id_nas_observacoes_de_receita_ja_baixada(self):
+        v = VhsysFalso([receita(7, liquidado="Sim", obs="Asaas (pay_1)")])
+        r = baixa.processar_evento(evento(), v, AsaasFalso())
+        self.assertEqual((r["resultado"], r["receita"]), ("ja_liquidada", 7))
+
+    def test_acha_pelas_observacoes_mesmo_com_valor_diferente(self):
+        v = VhsysFalso([receita(8, "95.00", obs="Asaas (pay_1)")])
+        r = baixa.processar_evento(evento(), v, AsaasFalso())
+        self.assertEqual(r["receita"], 8)
 
     def test_sem_referencia_acha_por_valor_vencimento_cliente(self):
         v = VhsysFalso([receita(10, cliente="JOSE DA SILVA"), receita(11, cliente="Maria")])

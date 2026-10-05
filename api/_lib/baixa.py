@@ -1,9 +1,10 @@
 """Regra de baixa automática: evento de cobrança do Asaas -> receita no VHSYS.
 
 Recebido (PAYMENT_RECEIVED) liquida a receita; estorno desfaz a liquidação.
-A receita é localizada pelo externalReference da cobrança (ID da receita no
-VHSYS) e, sem ele, por uma única receita em aberto com mesmo valor, vencimento
-e cliente. Em qualquer dúvida nada é alterado e o caso volta como
+A receita é localizada, nesta ordem: pelo externalReference da cobrança (ID da
+receita no VHSYS); pelo ID da cobrança (pay_...) que o ERP Lite grava nas
+observações da receita; e, por último, por uma única receita em aberto com
+mesmo valor, vencimento e cliente. Em qualquer dúvida nada é alterado e o caso volta como
 "nao_conciliado", para conferência manual.
 
 Em modo "simulacao" (o padrão) nada é gravado no VHSYS: o resultado só diz o
@@ -44,6 +45,14 @@ def localizar_receita(pagamento, vhsys, asaas):
         return None, f"externalReference {ref} não existe no VHSYS"
 
     valor = _valor(pagamento.get("originalValue") or pagamento.get("value"))
+    pid = pagamento.get("id")
+    if pid:
+        achadas = vhsys.buscar_por_cobranca(pid, valor) or vhsys.buscar_por_cobranca(pid)
+        if len(achadas) == 1:
+            return achadas[0], "id da cobrança nas observações"
+        if achadas:
+            return None, f"{len(achadas)} receitas com {pid} nas observações"
+
     vencimento = pagamento.get("originalDueDate") or pagamento.get("dueDate")
     candidatas = vhsys.buscar_abertas(valor, vencimento)
     cliente = asaas.consultar_cliente(pagamento.get("customer"))
