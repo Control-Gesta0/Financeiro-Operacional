@@ -50,7 +50,8 @@ def conferir_recebimento(mov, liquidadas, vhsys, asaas):
     if not receita:
         return {"status": "pendente", "motivo": como}
     if receita.get("liquidado_rec") == "Sim":
-        return {"status": "manual", "receita": receita.get("id_conta_rec")}
+        return {"status": "manual", "receita": receita.get("id_conta_rec"),
+                "valor_taxa": receita.get("valor_taxa")}
     estado = "simulado" if baixa.modo() == "simulacao" else "pendente"
     return {"status": estado, "receita": receita.get("id_conta_rec"), "como": como,
             "motivo": None if estado == "simulado" else "receita ainda em aberto no VHSYS"}
@@ -104,7 +105,10 @@ def montar(data, vhsys, asaas):
     # Uma cobrança pode ter mais de uma linha de taxa no extrato: compara a SOMA delas
     # com o valor_taxa gravado na receita.
     status_por_pid = {x["pagamento"]: x["status"] for x in recebimentos}
-    taxas = {"lancada": [], "simulada": [], "divergente": [], "a_lancar": []}
+    taxas = {"lancada": [], "simulada": [], "divergente": [], "a_lancar": [],
+             "manual_sem_taxa": []}
+    taxa_manual = {x["pagamento"]: x.get("valor_taxa") for x in recebimentos
+                   if x["status"] == "manual"}
     movs_taxa = grupos.pop("taxa", [])
     por_pid = defaultdict(list)
     for m in movs_taxa:
@@ -123,8 +127,14 @@ def montar(data, vhsys, asaas):
                                         "na_receita": str(receita.get("valor_taxa") or "0")})
         elif status_por_pid.get(pid) == "simulado":
             taxas["simulada"].extend(movs)
+        elif status_por_pid.get(pid) == "manual":
+            # Baixada à mão: vale a taxa que estiver gravada na própria receita.
+            na_receita = Decimal(str(taxa_manual.get(pid) or 0))
+            taxas["lancada" if na_receita == total else "manual_sem_taxa"].extend(movs)
         else:
             taxas["a_lancar"].extend(movs)
+    if taxas["manual_sem_taxa"]:
+        grupos["taxa_manual"] = taxas["manual_sem_taxa"]
     pids_do_dia = {x["pagamento"] for x in recebimentos}
     vinculadas = [m for m in taxas["a_lancar"] if m.get("paymentId") in pids_do_dia]
     soltas = [m for m in taxas["a_lancar"] if m.get("paymentId") not in pids_do_dia]
@@ -209,6 +219,7 @@ def texto(r):
                           f"na receita {brl(x['na_receita'])}")
 
     rotulos = (("taxa_pendente", "Taxas das cobranças sem baixa"),
+               ("taxa_manual", "Taxas de cobranças baixadas à mão, sem a taxa na receita"),
                ("taxa", "Taxas sem cobrança vinculada"), ("transferencia", "Transferências e Pix enviados"),
                ("estorno", "Estornos e chargebacks"), ("outro", "Outros movimentos"))
     a_lancar = [(rot, g) for g, rot in rotulos if r["qtd"].get(g)]
