@@ -47,6 +47,11 @@ class handler(BaseHTTPRequestHandler):
             print(json.dumps({"reprocessar": data, "resultado": "erro", "motivo": str(e)},
                              ensure_ascii=False))
             return self._responder(502, {"erro": str(e)})
+        except Exception as e:  # resposta inesperada de uma API: registra e devolve o erro
+            motivo = f"{type(e).__name__}: {e}"
+            print(json.dumps({"reprocessar": data, "resultado": "erro_inesperado", "motivo": motivo},
+                             ensure_ascii=False))
+            return self._responder(500, {"erro": motivo})
         print(json.dumps({"reprocessar": data, "aplicado": aplicar,
                           "resumo": resultado["resumo"]}, ensure_ascii=False))
         self._responder(200, resultado)

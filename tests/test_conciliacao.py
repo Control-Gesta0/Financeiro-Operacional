@@ -20,8 +20,12 @@ import conciliar  # noqa: E402
 
 
 class Vhsys:
-    def __init__(self, receitas):
+    def __init__(self, receitas, despesas=()):
         self.receitas = {r["id_conta_rec"]: r for r in receitas}
+        self.despesas = list(despesas)
+
+    def listar_despesas_taxa(self, data):
+        return self.despesas
 
     def consultar_receita(self, id_receita):
         return self.receitas.get(int(id_receita))
@@ -117,8 +121,8 @@ class TestMontar(unittest.TestCase):
         self.assertIn("receita 2 (externalReference)", t)
         self.assertIn("🔴 1 sem baixa", t)
         self.assertIn("2 receitas em aberto", t)
-        self.assertIn("Taxas de cobrança lançadas nas receitas (30.01.10): 1 · R$ 1,99", t)
-        self.assertIn("🟡 1 taxas · R$ 1,99 seriam lançadas nas receitas (simulação)", t)
+        self.assertIn("Taxas de cobrança lançadas (30.01.10): 1 · R$ 1,99", t)
+        self.assertIn("🟡 1 taxas · R$ 1,99 seriam lançadas (simulação)", t)
         self.assertIn("Taxas sem cobrança vinculada: 1 · R$ -1,00", t)
         self.assertIn("Transferências e Pix enviados: 1 · R$ -300,00", t)
         self.assertIn("Bônus", t)
@@ -137,10 +141,23 @@ class TestMontar(unittest.TestCase):
                    mov("PAYMENT_FEE", -1.99, 98.01, "pay_1")])
         r = conciliar.montar(DIA, v, a)
         self.assertEqual(r["taxas_divergentes"],
-                         [{"receita": 1, "pagamento": "pay_1", "valor": "1.99", "na_receita": "0"}])
+                         [{"receita": 1, "pagamento": "pay_1", "valor": "1.99", "lancado": "0"}])
         t = conciliar.texto(r)
-        self.assertIn("🔴 1 receitas com taxa diferente do extrato", t)
-        self.assertIn("receita 1 · extrato R$ 1,99 · na receita R$ 0,00", t)
+        self.assertIn("🔴 1 cobranças com taxa diferente do extrato", t)
+        self.assertIn("receita 1 · extrato R$ 1,99 · lançado R$ 0,00", t)
+
+    def test_taxa_conferida_contra_a_despesa_lancada(self):
+        # Pix 30/09: Taxa do Pix 1,85 + mensageria 0,99 = despesa de 2,84.
+        v = Vhsys([receita(1, "Sim", "Baixa automática Asaas pay_1 (PIX).", data_pag=DIA)],
+                  despesas=[{"valor_pag": "2.84", "vencimento_pag": DIA,
+                             "observacoes_pag": "Taxas da cobrança Asaas pay_1 (receita 1)."}])
+        a = Asaas([mov("PAYMENT_RECEIVED", 100, 100, "pay_1"),
+                   mov("PAYMENT_FEE", -1.85, 98.15, "pay_1"),
+                   mov("PAYMENT_MESSAGING_NOTIFICATION_FEE", -0.99, 97.16, "pay_1")])
+        r = conciliar.montar(DIA, v, a)
+        self.assertEqual(r["taxas_lancadas"], {"qtd": 2, "total": "2.84"})
+        self.assertEqual(r["taxas_divergentes"], [])
+        self.assertIn("Taxas de cobrança lançadas (30.01.10): 2 · R$ 2,84", conciliar.texto(r))
 
     def test_duas_linhas_de_taxa_somam_contra_a_receita(self):
         # Caso de 30/09/2026: cada cobrança teve duas linhas de taxa somando R$ 2,84.

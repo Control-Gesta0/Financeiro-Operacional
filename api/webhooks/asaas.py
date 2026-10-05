@@ -46,6 +46,10 @@ class handler(BaseHTTPRequestHandler):
             print(json.dumps({"evento": evento.get("event"), "resultado": "erro",
                               "motivo": str(e)}, ensure_ascii=False))
             return self._responder(500, {"erro": "falha temporária, reenviar"})
+        except Exception as e:  # resposta inesperada de uma API: registra e pede reenvio
+            print(json.dumps({"evento": evento.get("event"), "resultado": "erro_inesperado",
+                              "motivo": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+            return self._responder(500, {"erro": "erro inesperado, reenviar"})
         print(json.dumps(resultado, ensure_ascii=False))
         self._responder(200, resultado)
 

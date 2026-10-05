@@ -25,7 +25,7 @@ OBS_JN = "Cobranca em aberto no Asaas (pay_jn). Cobrança de P 1402"
 class Vhsys:
     def __init__(self, receitas):
         self.receitas = {r["id_conta_rec"]: dict(r) for r in receitas}
-        self.liquidadas = []
+        self.liquidadas, self.despesas = [], []
 
     def consultar_receita(self, id_receita):
         return self.receitas.get(int(id_receita))
@@ -40,6 +40,13 @@ class Vhsys:
     def liquidar(self, id_receita, campos):
         self.liquidadas.append((id_receita, campos))
         self.receitas[id_receita].update(campos, liquidado_rec="Sim")
+
+    def buscar_despesa_taxa(self, pid, data):
+        return [d for d in self.despesas if pid in d["observacoes_pag"]]
+
+    def cadastrar_despesa(self, campos):
+        self.despesas.append({**campos, "id_conta_pag": 900 + len(self.despesas)})
+        return self.despesas[-1]
 
 
 class Asaas:
@@ -61,7 +68,8 @@ class Asaas:
 
 def receita(id_, valor, venc, obs="", liquidado="Nao"):
     return {"id_conta_rec": id_, "valor_rec": valor, "vencimento_rec": venc,
-            "observacoes_rec": obs, "liquidado_rec": liquidado, "nome_cliente": "X"}
+            "observacoes_rec": obs, "liquidado_rec": liquidado, "nome_cliente": "X",
+            "id_banco": "7001"}
 
 
 def mov(tipo, valor, pid, desc=""):
@@ -103,8 +111,8 @@ class TestReprocessar(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BAIXA_MODO": "ativo"}):
             r = reprocessamento.reprocessar(DIA, v, a, aplicar=True)
         self.assertEqual([i for i, _ in v.liquidadas], [140738277])
-        campos = v.liquidadas[0][1]
-        self.assertEqual((campos["valor_taxa"], campos["data_pagamento"]), ("2.84", DIA))
+        self.assertEqual(v.liquidadas[0][1]["data_pagamento"], DIA)
+        self.assertEqual([d["valor_pag"] for d in v.despesas], ["2.84"])
         self.assertTrue(r["aplicado"])
 
     def test_rodar_de_novo_nao_baixa_em_dobro(self):
@@ -112,7 +120,7 @@ class TestReprocessar(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BAIXA_MODO": "ativo"}):
             reprocessamento.reprocessar(DIA, v, a, aplicar=True)
             r = reprocessamento.reprocessar(DIA, v, a, aplicar=True)
-        self.assertEqual(len(v.liquidadas), 1)
+        self.assertEqual((len(v.liquidadas), len(v.despesas)), (1, 1))
         self.assertEqual(r["resumo"], {"ja_liquidada": 2})
 
 

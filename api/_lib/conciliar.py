@@ -113,24 +113,33 @@ def montar(data, vhsys, asaas):
     por_pid = defaultdict(list)
     for m in movs_taxa:
         por_pid[m.get("paymentId") or ""].append(m)
+    # Taxas lançadas como despesa pela integração, por cobrança.
+    despesa_por_pid = defaultdict(Decimal)
+    for d in vhsys.listar_despesas_taxa(data):
+        m = re.search(r"Asaas (pay_[A-Za-z0-9]+)", d.get("observacoes_pag") or "")
+        if m:
+            despesa_por_pid[m.group(1)] += Decimal(str(d.get("valor_pag") or 0))
     for pid, movs in por_pid.items():
         if not pid:
             taxas["a_lancar"].extend(movs)
             continue
         receita = next((r for r in liquidadas if pid in (r.get("obs_pagamento") or "")), None)
         total = sum((abs(Decimal(str(m.get("value") or 0))) for m in movs), Decimal(0))
-        if receita and Decimal(str(receita.get("valor_taxa") or 0)) == total:
-            taxas["lancada"].extend(movs)
-        elif receita:
-            taxas["divergente"].append({"receita": receita.get("id_conta_rec"), "pagamento": pid,
-                                        "valor": str(total),
-                                        "na_receita": str(receita.get("valor_taxa") or "0")})
+        na_receita = Decimal(str((receita or {}).get("valor_taxa") or 0))
+        if pid in despesa_por_pid or receita:
+            lancado = despesa_por_pid.get(pid) or na_receita
+            if lancado == total:
+                taxas["lancada"].extend(movs)
+            else:
+                taxas["divergente"].append({
+                    "receita": (receita or {}).get("id_conta_rec"), "pagamento": pid,
+                    "valor": str(total), "lancado": str(lancado)})
         elif status_por_pid.get(pid) == "simulado":
             taxas["simulada"].extend(movs)
         elif status_por_pid.get(pid) == "manual":
             # Baixada à mão: vale a taxa que estiver gravada na própria receita.
-            na_receita = Decimal(str(taxa_manual.get(pid) or 0))
-            taxas["lancada" if na_receita == total else "manual_sem_taxa"].extend(movs)
+            na_manual = Decimal(str(taxa_manual.get(pid) or 0))
+            taxas["lancada" if na_manual == total else "manual_sem_taxa"].extend(movs)
         else:
             taxas["a_lancar"].extend(movs)
     if taxas["manual_sem_taxa"]:
@@ -207,16 +216,16 @@ def texto(r):
             linhas.append(f"• receita {x['receita']} · {x['cliente']} · {brl(x['valor'] or 0)}")
 
     if r["taxas_lancadas"]["qtd"]:
-        linhas.append(f"\nTaxas de cobrança lançadas nas receitas (30.01.10): "
+        linhas.append(f"\nTaxas de cobrança lançadas (30.01.10): "
                       f"{r['taxas_lancadas']['qtd']} · {brl(r['taxas_lancadas']['total'])}")
     if r["taxas_simuladas"]["qtd"]:
         linhas.append(f"🟡 {r['taxas_simuladas']['qtd']} taxas · {brl(r['taxas_simuladas']['total'])} "
-                      "seriam lançadas nas receitas (simulação)")
+                      "seriam lançadas (simulação)")
     if r["taxas_divergentes"]:
-        linhas.append(f"🔴 {len(r['taxas_divergentes'])} receitas com taxa diferente do extrato:")
+        linhas.append(f"🔴 {len(r['taxas_divergentes'])} cobranças com taxa diferente do extrato:")
         for x in r["taxas_divergentes"][:MAX_ITENS]:
             linhas.append(f"• receita {x['receita']} · extrato {brl(x['valor'])} · "
-                          f"na receita {brl(x['na_receita'])}")
+                          f"lançado {brl(x['lancado'])}")
 
     rotulos = (("taxa_pendente", "Taxas das cobranças sem baixa"),
                ("taxa_manual", "Taxas de cobranças baixadas à mão, sem a taxa na receita"),

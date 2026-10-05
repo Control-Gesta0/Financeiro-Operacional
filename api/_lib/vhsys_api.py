@@ -80,13 +80,15 @@ def buscar_abertas(valor, vencimento):
             and vencimento in (r.get("vencimento_rec"), r.get("vencimento_original"))]
 
 
-def _todas(params):
+def _todas(params, caminho="/contas-receber"):
     receitas, offset = [], 0
     while True:
-        corpo = _chamar("GET", "/contas-receber", {**params, "limit": 250, "offset": offset})
+        corpo = _chamar("GET", caminho, {**params, "limit": 250, "offset": offset})
         if not corpo or corpo.get("status") != "success":
             return receitas
         pagina = corpo.get("data") or []
+        if isinstance(pagina, dict):
+            pagina = [pagina]
         receitas.extend(pagina)
         offset += len(pagina)
         if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
@@ -140,3 +142,46 @@ def listar_liquidadas(data):
         offset += len(pagina)
         if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
             return receitas
+
+
+# ---------------------------------------------------------------- despesas (taxas)
+# As taxas do Asaas viram despesas pagas na categoria de taxas de cobrança. A marca
+# abaixo nas observações identifica as lançadas pela integração (e a cobrança).
+MARCA_TAXA = "Taxas da cobrança Asaas"
+
+
+def listar_despesas_taxa(data):
+    """Despesas de taxa lançadas pela integração com vencimento no dia (YYYY-MM-DD).
+    data_vencimento também é "a partir de" no VHSYS: o dia exato é conferido aqui."""
+    return [d for d in _todas({"data_vencimento": data, "lixeira": "Nao"}, "/contas-pagar")
+            if d.get("vencimento_pag") == data and MARCA_TAXA in (d.get("observacoes_pag") or "")]
+
+
+def buscar_despesa_taxa(id_cobranca, data):
+    codigo = re.compile(re.escape(id_cobranca) + r"(?![A-Za-z0-9])")
+    return [d for d in listar_despesas_taxa(data) if codigo.search(d.get("observacoes_pag") or "")]
+
+
+def cadastrar_despesa(campos):
+    corpo = _chamar("POST", "/contas-pagar", body=campos)
+    if not corpo or corpo.get("status") != "success":
+        raise ErroVhsys(f"cadastrar despesa: {json.dumps(corpo, ensure_ascii=False)[:300]}")
+    dados = corpo.get("data")
+    return (dados[0] if isinstance(dados, list) else dados) or {}
+
+
+def consultar_despesa(id_despesa):
+    corpo = _chamar("GET", f"/contas-pagar/{id_despesa}")
+    if not corpo or corpo.get("status") != "success":
+        return None
+    dados = corpo.get("data")
+    return dados[0] if isinstance(dados, list) else dados or None
+
+
+def liquidar_despesa(id_despesa, valor, data):
+    corpo = _chamar("PUT", f"/contas-pagar/{id_despesa}",
+                    body={"liquidado_pag": "Sim", "valor_pago": valor, "data_pagamento": data})
+    if not corpo or corpo.get("status") != "success":
+        raise ErroVhsys(f"liquidar despesa {id_despesa}: "
+                        f"{json.dumps(corpo, ensure_ascii=False)[:300]}")
+    return corpo
