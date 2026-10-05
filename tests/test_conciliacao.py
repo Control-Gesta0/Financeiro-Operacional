@@ -157,6 +157,15 @@ class TestMontar(unittest.TestCase):
         self.assertEqual(len(r["recebimentos"]), 1)
         self.assertEqual(r["antecipadas_compensadas"], [])
 
+    def test_taxa_de_cobranca_pendente_tem_rotulo_proprio(self):
+        a = Asaas([mov("PAYMENT_RECEIVED", 828, 828, "pay_jn"),
+                   mov("PAYMENT_FEE", -1.99, 826.01, "pay_jn"),
+                   mov("TRANSFER_FEE", -1, 825.01)],
+                  {"pay_jn": {"id": "pay_jn", "value": 828, "dueDate": "2026-09-05"}})
+        t = conciliar.texto(conciliar.montar(DIA, Vhsys([]), a))
+        self.assertIn("Taxas das cobranças sem baixa: 1 · R$ -1,99", t)
+        self.assertIn("Taxas sem cobrança vinculada: 1 · R$ -1,00", t)
+
     def test_dia_sem_movimento(self):
         r = conciliar.montar(DIA, Vhsys([]), Asaas([]))
         self.assertIn("Sem movimento", conciliar.texto(r))

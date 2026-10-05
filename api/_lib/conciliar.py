@@ -115,8 +115,13 @@ def montar(data, vhsys, asaas):
             taxas["simulada"].append(m)
         else:
             taxas["a_lancar"].append(m)
-    if taxas["a_lancar"]:
-        grupos["taxa"] = taxas["a_lancar"]
+    pids_do_dia = {x["pagamento"] for x in recebimentos}
+    vinculadas = [m for m in taxas["a_lancar"] if m.get("paymentId") in pids_do_dia]
+    soltas = [m for m in taxas["a_lancar"] if m.get("paymentId") not in pids_do_dia]
+    if vinculadas:
+        grupos["taxa_pendente"] = vinculadas
+    if soltas:
+        grupos["taxa"] = soltas
 
     pagos_no_dia = {m.get("paymentId") for m in grupos["recebimento"]}
     sem_credito = [r for r in liquidadas
@@ -191,7 +196,8 @@ def texto(r):
         for x in r["taxas_divergentes"][:MAX_ITENS]:
             linhas.append(f"• receita {x['receita']} · taxa {brl(x['valor'])}")
 
-    rotulos = (("taxa", "Taxas sem cobrança vinculada"), ("transferencia", "Transferências e Pix enviados"),
+    rotulos = (("taxa_pendente", "Taxas das cobranças sem baixa"),
+               ("taxa", "Taxas sem cobrança vinculada"), ("transferencia", "Transferências e Pix enviados"),
                ("estorno", "Estornos e chargebacks"), ("outro", "Outros movimentos"))
     a_lancar = [(rot, g) for g, rot in rotulos if r["qtd"].get(g)]
     if a_lancar:
