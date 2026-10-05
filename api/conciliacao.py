@@ -7,7 +7,6 @@ Parâmetros: ?data=AAAA-MM-DD (padrão: ontem) · ?enviar=0 devolve o texto sem 
 Destino: CONCILIACAO_WHATSAPP (telefone com DDI ou JID de grupo).
 """
 import datetime as dt
-import hmac
 import json
 import os
 import sys
@@ -16,16 +15,10 @@ from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
 import asaas_api  # noqa: E402
+from autorizacao import autorizado_cron  # noqa: E402
 import conciliar  # noqa: E402
 import vhsys_api  # noqa: E402
 import whatsapp  # noqa: E402
-
-
-def _autorizado(headers, params):
-    esperado = os.environ.get("CRON_SECRET", "")
-    recebido = (headers.get("Authorization") or "").removeprefix("Bearer ").strip() \
-        or (params.get("chave") or [""])[0]
-    return bool(esperado) and hmac.compare_digest(recebido.encode(), esperado.encode())
 
 
 class handler(BaseHTTPRequestHandler):
@@ -39,7 +32,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if not _autorizado(self.headers, params):
+        if not autorizado_cron(self.headers, params):
             return self._responder(401, {"erro": "não autorizado"})
         data = (params.get("data") or [conciliar.ontem()])[0]
         try:
