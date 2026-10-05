@@ -12,6 +12,10 @@ class ErroAsaas(Exception):
     pass
 
 
+def configurado():
+    return bool(os.environ.get("ASAAS_API_KEY"))
+
+
 def consultar_cliente(id_cliente):
     """Devolve o cliente (name, cpfCnpj...) ou None se não houver chave/cliente."""
     if not id_cliente or not os.environ.get("ASAAS_API_KEY"):

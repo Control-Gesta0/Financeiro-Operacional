@@ -48,8 +48,17 @@ class VhsysFalso:
 
 
 class AsaasFalso:
-    def __init__(self, clientes=None):
+    def __init__(self, clientes=None, extrato=None):
         self.clientes = clientes or {}
+        self.extrato = extrato or []
+        self.consultas_extrato = []
+
+    def configurado(self):
+        return True
+
+    def listar_extrato(self, data):
+        self.consultas_extrato.append(data)
+        return self.extrato
 
     def consultar_cliente(self, id_cliente):
         return self.clientes.get(id_cliente)
@@ -83,6 +92,27 @@ class TestRegra(unittest.TestCase):
         self.assertIn("pay_1", campos["obs_pagamento"])
         self.assertEqual(campos["valor_taxa"], "1.99")
         self.assertIs(r["taxa_gravada"], True)
+
+    def test_taxa_soma_pix_e_mensageria_do_extrato(self):
+        # Caso real de 30/09/2026: Taxa do Pix 1,85 + Taxa de mensageria 0,99.
+        extrato = [
+            {"type": "PAYMENT_RECEIVED", "paymentId": "pay_1", "value": 100.0},
+            {"type": "PAYMENT_FEE", "paymentId": "pay_1", "value": -1.85},
+            {"type": "PAYMENT_MESSAGING_NOTIFICATION_FEE", "paymentId": "pay_1", "value": -0.99},
+            {"type": "PAYMENT_FEE", "paymentId": "pay_outro", "value": -1.85},
+        ]
+        v = VhsysFalso([receita(10)])
+        a = AsaasFalso(extrato=extrato)
+        r = baixa.processar_evento(evento(externalReference="10", netValue=98.15), v, a)
+        self.assertEqual(v.liquidadas[0][1]["valor_taxa"], "2.84")
+        self.assertEqual(r["taxa_origem"], "extrato")
+        self.assertEqual(a.consultas_extrato, ["2026-10-11"])
+
+    def test_sem_linhas_no_extrato_usa_bruto_menos_liquido(self):
+        v = VhsysFalso([receita(10)])
+        r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual(v.liquidadas[0][1]["valor_taxa"], "1.99")
+        self.assertEqual(r["taxa_origem"], "valor_liquido")
 
     def test_avisa_quando_vhsys_nao_grava_a_taxa(self):
         v = VhsysFalso([receita(10)], ignorar={"valor_taxa"})

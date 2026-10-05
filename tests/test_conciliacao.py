@@ -45,6 +45,9 @@ class Asaas:
     def __init__(self, extrato, cobrancas=None, clientes=None):
         self.extrato, self.cobrancas, self.clientes = extrato, cobrancas or {}, clientes or {}
 
+    def configurado(self):
+        return True
+
     def listar_extrato(self, data):
         return self.extrato
 
