@@ -108,3 +108,13 @@ def buscar_cobranca_por_referencia(referencia):
 
 def criar_cobranca(dados):
     return _enviar("POST", "/payments", dados)
+
+
+def linha_digitavel(id_cobranca):
+    """{"identificationField", "nossoNumero", "barCode"} do boleto, ou None."""
+    return _get(f"/payments/{urllib.parse.quote(id_cobranca)}/identificationField")
+
+
+def pix_qrcode(id_cobranca):
+    """{"payload" (copia e cola), "encodedImage", "expirationDate"}, ou None."""
+    return _get(f"/payments/{urllib.parse.quote(id_cobranca)}/pixQrCode")
