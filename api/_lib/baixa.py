@@ -96,13 +96,23 @@ def baixada_pela_integracao(receita, pid):
     return f"{MARCA_BAIXA} {pid} " in (receita.get("obs_pagamento") or "")
 
 
+LIMITE_NOME_DESPESA = 45  # o VHSYS recusa nome_conta maior (HTTP 403, visto em 05/10/2026)
+
+
+def nome_despesa_taxa(fatura, cliente):
+    """Ex.: "Taxas Asaas 868268326 - J.N DOS REIS LOCACOE". A fatura vem primeiro para
+    nunca ser cortada; o nome completo do cliente fica nas observações."""
+    nome = f"Taxas Asaas {fatura}" + (f" - {cliente}" if cliente else "")
+    return nome[:LIMITE_NOME_DESPESA].rstrip(" -")
+
+
 def campos_despesa_taxa(pagamento, receita, taxa):
     """Despesa paga com as taxas do Asaas da cobrança, na categoria 30.01.10."""
     pid, data = pagamento.get("id"), data_credito(pagamento)
     fatura = pagamento.get("invoiceNumber") or pid
     cliente = receita.get("nome_cliente") or ""
     campos = {
-        "nome_conta": f"Taxas Asaas - fatura {fatura}" + (f" - {cliente}" if cliente else ""),
+        "nome_conta": nome_despesa_taxa(fatura, cliente),
         "id_banco": receita.get("id_banco") or os.environ.get("VHSYS_ID_BANCO_ASAAS"),
         "valor_pag": taxa,
         "valor_pago": taxa,
@@ -113,7 +123,8 @@ def campos_despesa_taxa(pagamento, receita, taxa):
         "id_categoria": os.environ.get("VHSYS_ID_CATEGORIA_TAXAS", CATEGORIA_TAXAS[0]),
         "categoria_pag": os.environ.get("VHSYS_CATEGORIA_TAXAS", CATEGORIA_TAXAS[1]),
         "observacoes_pag": (f"{MARCA_TAXA} {pid} (receita {receita.get('id_conta_rec')}). "
-                            "Lançada pela baixa automática."),
+                            f"Fatura {fatura}" + (f", {cliente}" if cliente else "")
+                            + ". Lançada pela baixa automática."),
     }
     if os.environ.get("VHSYS_ID_FORNECEDOR_ASAAS"):
         campos["id_fornecedor"] = os.environ["VHSYS_ID_FORNECEDOR_ASAAS"]
