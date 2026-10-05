@@ -147,6 +147,13 @@ class TestRegra(unittest.TestCase):
         self.assertEqual(r["resultado"], "nao_conciliado")
         self.assertEqual(v.desliquidadas, [])
 
+    def test_cobranca_antecipada_e_ignorada(self):
+        v = VhsysFalso([receita(10)])
+        r = baixa.processar_evento(evento(externalReference="10", anticipated=True), v,
+                                   AsaasFalso())
+        self.assertEqual((r["resultado"], r["motivo"]), ("ignorado", "cobrança antecipada"))
+        self.assertEqual(v.liquidadas, [])
+
     def test_eventos_sem_acao(self):
         v = VhsysFalso([receita(10)])
         for tipo, esperado in (("PAYMENT_CREATED", "ignorado"), ("PAYMENT_CONFIRMED", "ignorado"),
