@@ -22,6 +22,11 @@ EVENTOS_ALERTA = {"PAYMENT_PARTIALLY_REFUNDED", "PAYMENT_CHARGEBACK_REQUESTED",
                   "PAYMENT_CHARGEBACK_DISPUTE"}
 
 
+MARCA_BAIXA = "Baixa automática Asaas"
+MARCA_TAXA = "Taxas da cobrança Asaas"  # igual a vhsys_api.MARCA_TAXA
+CATEGORIA_TAXAS = ("9653020", "30.01.10 - Taxas de Cobrança Boleto")
+
+
 def modo():
     return "ativo" if os.environ.get("BAIXA_MODO", "").strip().lower() == "ativo" else "simulacao"
 
@@ -65,24 +70,82 @@ def localizar_receita(pagamento, vhsys, asaas):
                   f"{vencimento}" + (f" para {cliente['name']}" if cliente else ""))
 
 
-def campos_baixa(pagamento, receita, taxa=None):
-    """Campos do PUT de liquidação. valor_rec mantém o valor original do título."""
+def campos_baixa(pagamento, receita):
+    """Campos do PUT de liquidação. valor_rec mantém o valor original do título.
+    A taxa não vai aqui: o VHSYS ignora valor_taxa na liquidação (visto em
+    30/09/2026); ela vira uma despesa à parte (lancar_taxa)."""
     campos = {
         "valor_rec": _valor(receita.get("valor_rec")),
         "valor_pago": _valor(pagamento.get("value")),
         # paymentDate = crédito na conta Asaas, que é o que aparece no extrato dela.
-        "data_pagamento": pagamento.get("paymentDate") or pagamento.get("clientPaymentDate"),
-        "obs_pagamento": (f"Baixa automática Asaas {pagamento.get('id')} "
+        "data_pagamento": data_credito(pagamento),
+        "obs_pagamento": (f"{MARCA_BAIXA} {pagamento.get('id')} "
                           f"({pagamento.get('billingType')}). Pago R$ {_valor(pagamento.get('value'))}, "
                           f"líquido R$ {_valor(pagamento.get('netValue'))}."),
     }
-    # Taxa do Asaas no próprio título: o VHSYS a apresenta na categoria de taxas de
-    # cobrança (30.01.10), sem precisar de uma despesa separada.
-    if taxa:
-        campos["valor_taxa"] = taxa
     if os.environ.get("VHSYS_ID_BANCO_ASAAS"):
         campos["id_banco"] = os.environ["VHSYS_ID_BANCO_ASAAS"]
     return campos
+
+
+def data_credito(pagamento):
+    return pagamento.get("paymentDate") or pagamento.get("clientPaymentDate")
+
+
+def baixada_pela_integracao(receita, pid):
+    return f"{MARCA_BAIXA} {pid} " in (receita.get("obs_pagamento") or "")
+
+
+def campos_despesa_taxa(pagamento, receita, taxa):
+    """Despesa paga com as taxas do Asaas da cobrança, na categoria 30.01.10."""
+    pid, data = pagamento.get("id"), data_credito(pagamento)
+    fatura = pagamento.get("invoiceNumber") or pid
+    cliente = receita.get("nome_cliente") or ""
+    campos = {
+        "nome_conta": f"Taxas Asaas - fatura {fatura}" + (f" - {cliente}" if cliente else ""),
+        "id_banco": receita.get("id_banco") or os.environ.get("VHSYS_ID_BANCO_ASAAS"),
+        "valor_pag": taxa,
+        "valor_pago": taxa,
+        "vencimento_pag": data,
+        "data_emissao": data,
+        "data_pagamento": data,
+        "liquidado_pag": "Sim",
+        "id_categoria": os.environ.get("VHSYS_ID_CATEGORIA_TAXAS", CATEGORIA_TAXAS[0]),
+        "categoria_pag": os.environ.get("VHSYS_CATEGORIA_TAXAS", CATEGORIA_TAXAS[1]),
+        "observacoes_pag": (f"{MARCA_TAXA} {pid} (receita {receita.get('id_conta_rec')}). "
+                            "Lançada pela baixa automática."),
+    }
+    if os.environ.get("VHSYS_ID_FORNECEDOR_ASAAS"):
+        campos["id_fornecedor"] = os.environ["VHSYS_ID_FORNECEDOR_ASAAS"]
+    return campos
+
+
+def lancar_taxa(pagamento, receita, vhsys, asaas, ativo):
+    """Lança (ou só descreve, em simulação) a despesa com as taxas da cobrança.
+    Não duplica: se já existe despesa de taxa da cobrança, garante que está paga."""
+    taxa, origem = taxa_cobranca(pagamento, asaas)
+    if not taxa:
+        return None
+    campos = campos_despesa_taxa(pagamento, receita, taxa)
+    info = {"valor": taxa, "origem": origem}
+    if not campos["id_banco"]:
+        return {**info, "status": "sem_conta_bancaria"}
+    if not ativo:
+        return {**info, "status": "simulada", "campos": campos}
+    pid, data = pagamento.get("id"), data_credito(pagamento)
+    existentes = vhsys.buscar_despesa_taxa(pid, data)
+    if existentes:
+        despesa, status = existentes[0], "ja_lancada"
+    else:
+        despesa, status = vhsys.cadastrar_despesa(campos), "lancada"
+    id_despesa = despesa.get("id_conta_pag")
+    paga = despesa.get("liquidado_pag") == "Sim"
+    if not paga and id_despesa:
+        # Se o VHSYS não liquidar na criação, liquida em seguida e confere.
+        if (vhsys.consultar_despesa(id_despesa) or {}).get("liquidado_pag") != "Sim":
+            vhsys.liquidar_despesa(id_despesa, taxa, data)
+        paga = (vhsys.consultar_despesa(id_despesa) or {}).get("liquidado_pag") == "Sim"
+    return {**info, "status": status, "despesa": id_despesa, "paga": paga}
 
 
 def taxa_cobranca(pagamento, asaas=None):
@@ -91,7 +154,7 @@ def taxa_cobranca(pagamento, asaas=None):
 
     O webhook só traz a taxa principal (bruto − líquido). A de mensageria é lançada à
     parte no extrato, por isso a soma vem do extrato do dia do crédito quando ele já
-    tiver as linhas daquela cobrança. Todas vão juntas no valor_taxa (30.01.10).
+    tiver as linhas daquela cobrança. Todas vão juntas numa despesa (30.01.10).
     """
     pid, data = pagamento.get("id"), pagamento.get("paymentDate")
     if asaas is not None and pid and data and asaas.configurado():
@@ -133,19 +196,18 @@ def processar_evento(evento, vhsys, asaas, modo_forcado=None):
     liquidada = receita.get("liquidado_rec") == "Sim"
 
     if tipo in EVENTOS_BAIXA:
+        ativo = base["modo"] == "ativo"
         if liquidada:
+            # Baixada antes pela integração (ex.: reprocessamento): só completa a taxa.
+            if baixada_pela_integracao(receita, pagamento.get("id")):
+                return {**base, "resultado": "ja_liquidada",
+                        "taxa": lancar_taxa(pagamento, receita, vhsys, asaas, ativo)}
             return {**base, "resultado": "ja_liquidada"}
-        taxa, base["taxa_origem"] = taxa_cobranca(pagamento, asaas)
-        campos = campos_baixa(pagamento, receita, taxa)
-        if base["modo"] != "ativo":
-            return {**base, "resultado": "liquidada", "campos": campos}
-        vhsys.liquidar(receita["id_conta_rec"], campos)
-        resultado = {**base, "resultado": "liquidada", "campos": campos}
-        if "valor_taxa" in campos:
-            # A doc do VHSYS não lista valor_taxa na liquidação: confere se gravou.
-            gravada = vhsys.consultar_receita(receita["id_conta_rec"]) or {}
-            resultado["taxa_gravada"] = _valor(gravada.get("valor_taxa")) == campos["valor_taxa"]
-        return resultado
+        campos = campos_baixa(pagamento, receita)
+        if ativo:
+            vhsys.liquidar(receita["id_conta_rec"], campos)
+        return {**base, "resultado": "liquidada", "campos": campos,
+                "taxa": lancar_taxa(pagamento, receita, vhsys, asaas, ativo)}
 
     if not liquidada:
         return {**base, "resultado": "ja_em_aberto"}

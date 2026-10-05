@@ -20,10 +20,11 @@ import baixa  # noqa: E402
 
 
 class VhsysFalso:
-    def __init__(self, receitas, ignorar=()):
+    def __init__(self, receitas, liquida_na_criacao=True):
         self.receitas = {r["id_conta_rec"]: dict(r) for r in receitas}
         self.liquidadas, self.desliquidadas = [], []
-        self.ignorar = set(ignorar)  # campos que o VHSYS falso não grava
+        self.despesas, self.despesas_liquidadas = {}, []
+        self.liquida_na_criacao = liquida_na_criacao
 
     def consultar_receita(self, id_receita):
         return self.receitas.get(int(id_receita))
@@ -40,11 +41,31 @@ class VhsysFalso:
 
     def liquidar(self, id_receita, campos):
         self.liquidadas.append((id_receita, campos))
-        gravados = {k: v for k, v in campos.items() if k not in self.ignorar}
-        self.receitas[id_receita].update(gravados, liquidado_rec="Sim")
+        self.receitas[id_receita].update(campos, liquidado_rec="Sim")
 
     def desliquidar(self, id_receita):
         self.desliquidadas.append(id_receita)
+
+    # despesas de taxa
+    def buscar_despesa_taxa(self, pid, data):
+        return [d for d in self.despesas.values()
+                if pid in d["observacoes_pag"] and d["vencimento_pag"] == data]
+
+    def listar_despesas_taxa(self, data):
+        return [d for d in self.despesas.values() if d["vencimento_pag"] == data]
+
+    def cadastrar_despesa(self, campos):
+        id_ = 900 + len(self.despesas)
+        pago = "Sim" if self.liquida_na_criacao else "Nao"
+        self.despesas[id_] = {**campos, "id_conta_pag": id_, "liquidado_pag": pago}
+        return {"id_conta_pag": id_}
+
+    def consultar_despesa(self, id_):
+        return self.despesas.get(id_)
+
+    def liquidar_despesa(self, id_, valor, data):
+        self.despesas_liquidadas.append(id_)
+        self.despesas[id_]["liquidado_pag"] = "Sim"
 
 
 class AsaasFalso:
@@ -67,7 +88,8 @@ class AsaasFalso:
 def receita(id_, valor="100.00", venc="2026-10-10", cliente="José da Silva", liquidado="Nao",
             obs=""):
     return {"id_conta_rec": id_, "valor_rec": valor, "vencimento_rec": venc,
-            "nome_cliente": cliente, "liquidado_rec": liquidado, "observacoes_rec": obs}
+            "nome_cliente": cliente, "liquidado_rec": liquidado, "observacoes_rec": obs,
+            "id_banco": "7001"}
 
 
 def evento(tipo="PAYMENT_RECEIVED", **pagamento):
@@ -90,8 +112,23 @@ class TestRegra(unittest.TestCase):
         self.assertEqual(campos["valor_pago"], "100.00")
         self.assertEqual(campos["data_pagamento"], "2026-10-11")
         self.assertIn("pay_1", campos["obs_pagamento"])
-        self.assertEqual(campos["valor_taxa"], "1.99")
-        self.assertIs(r["taxa_gravada"], True)
+        self.assertNotIn("valor_taxa", campos)  # o VHSYS ignora; a taxa vira despesa
+
+    def test_taxa_vira_despesa_paga_na_categoria_de_taxas(self):
+        v = VhsysFalso([receita(10)])
+        r = baixa.processar_evento(evento(externalReference="10", invoiceNumber="868268326"),
+                                   v, AsaasFalso())
+        self.assertEqual(r["taxa"]["status"], "lancada")
+        self.assertIs(r["taxa"]["paga"], True)
+        d = v.despesas[r["taxa"]["despesa"]]
+        self.assertEqual((d["valor_pag"], d["valor_pago"]), ("1.99", "1.99"))
+        self.assertEqual((d["id_categoria"], d["categoria_pag"]),
+                         ("9653020", "30.01.10 - Taxas de Cobrança Boleto"))
+        self.assertEqual(d["id_banco"], "7001")  # a mesma conta da receita (Asaas)
+        self.assertEqual((d["vencimento_pag"], d["data_pagamento"], d["liquidado_pag"]),
+                         ("2026-10-11", "2026-10-11", "Sim"))
+        self.assertEqual(d["nome_conta"], "Taxas Asaas - fatura 868268326 - José da Silva")
+        self.assertIn("Taxas da cobrança Asaas pay_1 (receita 10)", d["observacoes_pag"])
 
     def test_taxa_soma_pix_e_mensageria_do_extrato(self):
         # Caso real de 30/09/2026: Taxa do Pix 1,85 + Taxa de mensageria 0,99.
@@ -104,28 +141,53 @@ class TestRegra(unittest.TestCase):
         v = VhsysFalso([receita(10)])
         a = AsaasFalso(extrato=extrato)
         r = baixa.processar_evento(evento(externalReference="10", netValue=98.15), v, a)
-        self.assertEqual(v.liquidadas[0][1]["valor_taxa"], "2.84")
-        self.assertEqual(r["taxa_origem"], "extrato")
+        self.assertEqual((r["taxa"]["valor"], r["taxa"]["origem"]), ("2.84", "extrato"))
         self.assertEqual(a.consultas_extrato, ["2026-10-11"])
 
     def test_sem_linhas_no_extrato_usa_bruto_menos_liquido(self):
         v = VhsysFalso([receita(10)])
         r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
-        self.assertEqual(v.liquidadas[0][1]["valor_taxa"], "1.99")
-        self.assertEqual(r["taxa_origem"], "valor_liquido")
+        self.assertEqual((r["taxa"]["valor"], r["taxa"]["origem"]), ("1.99", "valor_liquido"))
 
-    def test_avisa_quando_vhsys_nao_grava_a_taxa(self):
-        v = VhsysFalso([receita(10)], ignorar={"valor_taxa"})
+    def test_liquida_a_despesa_se_o_vhsys_nao_liquidar_na_criacao(self):
+        v = VhsysFalso([receita(10)], liquida_na_criacao=False)
         r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
-        self.assertEqual(r["resultado"], "liquidada")
-        self.assertIs(r["taxa_gravada"], False)
+        self.assertEqual(v.despesas_liquidadas, [r["taxa"]["despesa"]])
+        self.assertIs(r["taxa"]["paga"], True)
 
-    def test_sem_taxa_nao_envia_o_campo(self):
+    def test_sem_taxa_nao_lanca_despesa(self):
         v = VhsysFalso([receita(10)])
         r = baixa.processar_evento(evento(externalReference="10", netValue=100.0), v,
                                    AsaasFalso())
-        self.assertNotIn("valor_taxa", v.liquidadas[0][1])
-        self.assertNotIn("taxa_gravada", r)
+        self.assertIsNone(r["taxa"])
+        self.assertEqual(v.despesas, {})
+
+    def test_receita_ja_baixada_pela_integracao_so_ganha_a_taxa(self):
+        # Caso real de 30/09/2026: J.N e Viviane baixadas antes, taxa ignorada pelo VHSYS.
+        r10 = receita(10, liquidado="Sim")
+        r10["obs_pagamento"] = "Baixa automática Asaas pay_1 (PIX). Pago R$ 100.00."
+        v = VhsysFalso([r10])
+        r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual((r["resultado"], r["taxa"]["status"]), ("ja_liquidada", "lancada"))
+        self.assertEqual(v.liquidadas, [])
+        r2 = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual(r2["taxa"]["status"], "ja_lancada")
+        self.assertEqual(len(v.despesas), 1)
+
+    def test_receita_baixada_a_mao_nao_ganha_taxa(self):
+        v = VhsysFalso([receita(10, liquidado="Sim")])
+        r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual(r["resultado"], "ja_liquidada")
+        self.assertNotIn("taxa", r)
+        self.assertEqual(v.despesas, {})
+
+    def test_sem_conta_bancaria_nao_lanca(self):
+        sem_conta = receita(10)
+        sem_conta["id_banco"] = None
+        v = VhsysFalso([sem_conta])
+        r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual(r["taxa"]["status"], "sem_conta_bancaria")
+        self.assertEqual(v.despesas, {})
 
     def test_pagamento_com_juros_mantem_valor_original(self):
         v = VhsysFalso([receita(10)])
@@ -227,12 +289,13 @@ class TestSimulacao(unittest.TestCase):
             os.environ.pop("BAIXA_MODO", None)
             r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
         self.assertEqual((r["modo"], r["resultado"]), ("simulacao", "liquidada"))
-        self.assertEqual(v.liquidadas, [])
+        self.assertEqual(r["taxa"]["status"], "simulada")
+        self.assertEqual((v.liquidadas, v.despesas), ([], {}))
 
 
 class VhsysHttpFalso(http.server.BaseHTTPRequestHandler):
     """Imita a API do VHSYS para testar o handler com HTTP de verdade."""
-    puts = []
+    puts, posts = [], []
     falhar = False
 
     def _json(self, status, corpo):
@@ -246,7 +309,15 @@ class VhsysHttpFalso(http.server.BaseHTTPRequestHandler):
         if self.falhar:
             return self._json(503, {"status": "error"})
         assert self.headers["access-token"] == "tk"
+        if self.path.startswith("/contas-pagar"):
+            return self._json(200, {"status": "success", "data": [], "paging": {"total": 0}})
         self._json(200, {"status": "success", "data": receita(10)})
+
+    def do_POST(self):
+        n = int(self.headers["Content-Length"])
+        VhsysHttpFalso.posts.append((self.path, json.loads(self.rfile.read(n))))
+        self._json(200, {"status": "success",
+                         "data": {"id_conta_pag": 901, "liquidado_pag": "Sim"}})
 
     def do_PUT(self):
         n = int(self.headers["Content-Length"])
@@ -283,7 +354,7 @@ class TestHandler(unittest.TestCase):
         cls.env.stop()
 
     def setUp(self):
-        VhsysHttpFalso.puts = []
+        VhsysHttpFalso.puts, VhsysHttpFalso.posts = [], []
         VhsysHttpFalso.falhar = False
 
     def post(self, corpo, token="segredo"):
@@ -311,6 +382,10 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(caminho, "/contas-receber/10")
         self.assertEqual(body["liquidado_rec"], "Sim")
         self.assertEqual(body["data_pagamento"], "2026-10-11")
+        caminho, despesa = VhsysHttpFalso.posts[0]
+        self.assertEqual((caminho, despesa["valor_pag"], despesa["id_categoria"]),
+                         ("/contas-pagar", "1.99", "9653020"))
+        self.assertEqual(corpo["taxa"]["status"], "lancada")
 
     def test_vhsys_fora_do_ar_pede_reenvio(self):
         VhsysHttpFalso.falhar = True
