@@ -106,12 +106,13 @@ def taxa_cobranca(pagamento, asaas=None):
     return (f"{taxa:.2f}", "valor_liquido") if taxa > 0 else (None, None)
 
 
-def processar_evento(evento, vhsys, asaas):
+def processar_evento(evento, vhsys, asaas, modo_forcado=None):
     """Aplica um evento de webhook. Erros de comunicação sobem como exceção
-    (o handler responde 500 e o Asaas reenvia); o resto vira um resultado."""
+    (o handler responde 500 e o Asaas reenvia); o resto vira um resultado.
+    modo_forcado="simulacao" permite uma prévia mesmo com a baixa ligada."""
     tipo = evento.get("event")
     pagamento = evento.get("payment") or {}
-    base = {"evento": tipo, "cobranca": pagamento.get("id"), "modo": modo()}
+    base = {"evento": tipo, "cobranca": pagamento.get("id"), "modo": modo_forcado or modo()}
 
     if tipo in EVENTOS_ALERTA:
         return {**base, "resultado": "alerta", "motivo": "requer conferência manual"}
