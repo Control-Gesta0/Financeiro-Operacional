@@ -251,6 +251,33 @@ class TestBoleto(unittest.TestCase):
         r, _ = rodar(v, Asaas(), hoje=dt.date(2026, 11, 20))
         self.assertEqual([x["receita"] for x in r["resultados"]], [12])
 
+    def test_primeira_parcela_leva_o_resumo_da_cobranca(self):
+        parcelas = [receita(11, venc="2026-10-30", ident="OS_158"),
+                    receita(12, venc="2026-11-30", ident="OS_158"),
+                    receita(13, venc="2026-12-30", ident="OS_158")]
+        parcelas[2]["valor_rec"] = "300.00"
+        v = Vhsys(parcelas, {77: CLIENTE})
+        r, msgs = rodar(v, Asaas())
+        texto = msgs[0][2]
+        self.assertIn("Segue o boleto de Mensalidade outubro (parcela 1 de 3) no valor de "
+                      "R$ 350,00", texto)
+        self.assertIn("Resumo da cobrança: R$ 1.000,00 em 3 parcelas\n"
+                      "• 1ª parcela: R$ 350,00, vencimento em 30/10/2026\n"
+                      "• 2ª parcela: R$ 350,00, vencimento em 30/11/2026\n"
+                      "• 3ª parcela: R$ 300,00, vencimento em 30/12/2026\n"
+                      "Os próximos boletos serão enviados por aqui 10 dias antes de cada "
+                      "vencimento.", texto)
+        self.assertLess(texto.index("Resumo"), texto.index("Linha digitável"))
+        r, msgs = rodar(v, Asaas(), hoje=dt.date(2026, 11, 20))
+        self.assertIn("(parcela 2 de 3)", msgs[0][2])
+        self.assertNotIn("Resumo", msgs[0][2])
+
+    def test_cobranca_unica_sem_resumo_nem_parcela(self):
+        v = Vhsys([receita()], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas())
+        self.assertNotIn("Resumo", msgs[0][2])
+        self.assertNotIn("parcela", msgs[0][2])
+
     def test_entrada_paga_na_hora_nao_antecipa_a_segunda(self):
         parcelas = [receita(21, venc="2026-10-20"), receita(22, venc="2026-11-20"),
                     receita(23, venc="2026-12-20")]
