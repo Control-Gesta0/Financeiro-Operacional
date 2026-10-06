@@ -10,6 +10,10 @@ import os
 import urllib.error
 import urllib.request
 
+# A Zaptos fica atrás do Cloudflare, que recusa o User-Agent padrão do Python
+# ("Python-urllib/...") com HTTP 403 "error code: 1010".
+USER_AGENT = "FinanceiroOperacional/1.0"
+
 
 class ErroWhatsapp(Exception):
     def __init__(self, mensagem, status=None):
@@ -35,7 +39,8 @@ def _chamar(metodo, caminho, corpo=None):
         raise ErroWhatsapp("ZAPTOS_URL ou ZAPTOS_TOKEN não configurados")
     dados = json.dumps(corpo).encode() if corpo is not None else None
     req = urllib.request.Request(f"{url}{caminho}", method=metodo, data=dados,
-                                 headers={"token": token, "Content-Type": "application/json"})
+                                 headers={"token": token, "Content-Type": "application/json",
+                                          "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             resposta = r.read()
