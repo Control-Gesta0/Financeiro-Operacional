@@ -202,6 +202,11 @@ def receitas_do_cliente(id_cliente):
     return _todas({"id_cliente": id_cliente, "lixeira": "Nao"})
 
 
+def listar_clientes():
+    """Todos os clientes (a API não filtra por telefone nem por documento)."""
+    return _todas({}, "/clientes")
+
+
 def consultar_cliente(id_cliente):
     corpo = _chamar("GET", f"/clientes/{urllib.parse.quote(str(id_cliente))}")
     if not corpo or corpo.get("status") != "success":

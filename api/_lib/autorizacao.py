@@ -9,3 +9,17 @@ def autorizado_cron(headers, params):
     recebido = (headers.get("Authorization") or "").removeprefix("Bearer ").strip() \
         or (params.get("chave") or [""])[0]
     return bool(esperado) and hmac.compare_digest(recebido.encode(), esperado.encode())
+
+
+def token_webhook_whatsapp():
+    """Segredo da URL do webhook da Zaptos, derivado da CRON_SECRET (trocar a CRON_SECRET
+    exige reconfigurar o webhook pela página /api/conectar_whatsapp)."""
+    segredo = os.environ.get("CRON_SECRET", "")
+    if not segredo:
+        return ""
+    return hmac.new(segredo.encode(), b"webhook-whatsapp", "sha256").hexdigest()[:40]
+
+
+def autorizado_webhook_whatsapp(params):
+    esperado, recebido = token_webhook_whatsapp(), (params.get("chave") or [""])[0]
+    return bool(esperado) and hmac.compare_digest(recebido.encode(), esperado.encode())

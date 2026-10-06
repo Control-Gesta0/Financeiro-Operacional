@@ -12,7 +12,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
-from autorizacao import autorizado_cron  # noqa: E402
+import atendimento  # noqa: E402
+from autorizacao import autorizado_cron, token_webhook_whatsapp  # noqa: E402
 import whatsapp  # noqa: E402
 
 ATUALIZAR_A_CADA = 15  # segundos; o QR Code da Zaptos muda e expira em cerca de 2 minutos
@@ -70,6 +71,27 @@ def conteudo(st, qrcode):
             f"<p>A página se atualiza em {ATUALIZAR_A_CADA} segundos.</p>")
 
 
+def secao_atendimento(recebendo, link_ligar, erro=None):
+    """Estado do atendimento automático e o botão que cadastra o webhook na Zaptos."""
+    modo = atendimento.modo()
+    explica = {"desligado": "desligado (o robô não responde ninguém)",
+               "teste": "teste (só responde aos números de teste)",
+               "ativo": "ativo (responde todos os clientes)"}[modo]
+    partes = ['<hr style="border:0;border-top:1px solid var(--borda);margin:20px 0">',
+              "<h1>Atendimento automático</h1>",
+              f"<p>Modo: <b>{explica}</b>. Muda em ATENDIMENTO_MODO na Vercel.</p>"]
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        partes.append('<p class="erro">Falta a ANTHROPIC_API_KEY na Vercel.</p>')
+    if erro:
+        partes.append(f'<p class="erro">{html.escape(erro)}</p>')
+    if recebendo:
+        partes.append('<p class="ok">Recebimento de mensagens ligado.</p>')
+    else:
+        partes.append("<p>Recebimento de mensagens desligado. "
+                      f'<a href="{html.escape(link_ligar)}">Ligar recebimento</a></p>')
+    return "".join(partes)
+
+
 class handler(BaseHTTPRequestHandler):
     def _pagina(self, status, corpo, atualizar=False):
         refresh = f'\n<meta http-equiv="refresh" content="{ATUALIZAR_A_CADA}">' if atualizar else ""
@@ -101,5 +123,20 @@ class handler(BaseHTTPRequestHandler):
                     if e.status in (401, 403, 404) else "Tente de novo em alguns segundos.")
             return self._pagina(502, '<h1>Não consegui falar com a Zaptos</h1>'
                                      f'<p class="erro">{html.escape(str(e))}</p><p>{dica}</p>')
+        extra = ""
+        if conectado:
+            host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+            url_webhook = f"https://{host}/api/webhooks/zaptos?chave={token_webhook_whatsapp()}"
+            chave = urllib.parse.quote((params.get("chave") or [""])[0])
+            erro = None
+            try:
+                if (params.get("webhook") or [""])[0] == "1":
+                    whatsapp.configurar_webhook(url_webhook)
+                recebendo = any(h.get("enabled") and h.get("url") == url_webhook
+                                for h in whatsapp.ver_webhook())
+            except whatsapp.ErroWhatsapp as e:
+                recebendo, erro = False, f"Não consegui configurar o recebimento: {e}"
+            extra = secao_atendimento(recebendo, f"?chave={chave}&webhook=1", erro)
         print(json.dumps({"conectar_whatsapp": "conectado" if conectado else "aguardando_qr"}))
-        self._pagina(200, conteudo(st, None if conectado else qrcode), atualizar=not conectado)
+        self._pagina(200, conteudo(st, None if conectado else qrcode) + extra,
+                     atualizar=not conectado)

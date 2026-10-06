@@ -125,3 +125,31 @@ def enviar_documento(destino, url_arquivo, nome_arquivo, legenda=None):
     if legenda:
         corpo["text"] = legenda
     return _post("/send/media", corpo)
+
+
+# ------------------------------------------------------------------ atendimento
+def detalhes_chat(numero):
+    """Conversa na Zaptos (campos lead_*, chatbot_disableUntil...)."""
+    return _chamar("POST", "/chat/details", {"number": numero, "preview": True}) or {}
+
+
+def editar_chat(chatid, campos):
+    """Grava campos da conversa (ex.: chatbot_disableUntil, lead_field19)."""
+    return _chamar("POST", "/chat/editLead", {"id": chatid, **campos})
+
+
+def historico(chatid, limite=10):
+    resposta = _chamar("POST", "/message/find", {"chatid": chatid, "limit": limite}) or {}
+    return resposta.get("messages") or [] if isinstance(resposta, dict) else []
+
+
+def ver_webhook():
+    resposta = _chamar("GET", "/webhook")
+    return resposta if isinstance(resposta, list) else []
+
+
+def configurar_webhook(url):
+    """Webhook único da instância: só mensagens, sem as enviadas pela API (evita loop) e
+    sem grupos."""
+    return _chamar("POST", "/webhook", {"url": url, "events": ["messages"], "enabled": True,
+                                        "excludeMessages": ["wasSentByApi", "isGroupYes"]})

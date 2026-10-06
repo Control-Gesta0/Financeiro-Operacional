@@ -21,7 +21,7 @@ QR = "data:image/png;base64,iVBORw0KGgoQRFALSO"
 
 
 class Zaptos(http.server.BaseHTTPRequestHandler):
-    estado, chamadas, http_status = "disconnected", [], 200
+    estado, chamadas, http_status, webhooks = "disconnected", [], 200, []
 
     def _json(self, corpo):
         dados = json.dumps(corpo).encode()
@@ -34,6 +34,8 @@ class Zaptos(http.server.BaseHTTPRequestHandler):
         Zaptos.chamadas.append(("GET", self.path, self.headers["token"]))
         if Zaptos.http_status != 200:
             return self._json({"error": "Invalid token"})
+        if self.path == "/webhook":
+            return self._json(Zaptos.webhooks)
         inst = {"status": Zaptos.estado, "profileName": "Control Gestão"}
         if Zaptos.estado == "connecting":
             inst["qrcode"] = QR
@@ -44,6 +46,10 @@ class Zaptos(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         Zaptos.chamadas.append(("POST", self.path, self.headers["token"]))
+        if self.path == "/webhook":
+            corpo = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            Zaptos.webhooks = [{**corpo, "id": "wh1"}]
+            return self._json(Zaptos.webhooks)
         Zaptos.estado = "connecting"
         self._json({"connected": False, "instance": {"status": "connecting", "qrcode": QR}})
 
@@ -71,7 +77,8 @@ class TestConectarWhatsapp(unittest.TestCase):
         cls.env.stop()
 
     def setUp(self):
-        Zaptos.estado, Zaptos.chamadas, Zaptos.http_status = "disconnected", [], 200
+        Zaptos.estado, Zaptos.chamadas, Zaptos.http_status, Zaptos.webhooks = (
+            "disconnected", [], 200, [])
 
     def get(self, query="?chave=cron"):
         abridor = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -111,7 +118,23 @@ class TestConectarWhatsapp(unittest.TestCase):
         self.assertIn("Control Gestão (5511900001111)", pagina)
         self.assertNotIn("refresh", pagina)
         self.assertNotIn("<img", pagina)
-        self.assertEqual(len(Zaptos.chamadas), 1)
+        self.assertEqual([c[:2] for c in Zaptos.chamadas],
+                         [("GET", "/instance/status"), ("GET", "/webhook")])
+        self.assertIn("Recebimento de mensagens desligado", pagina)
+        self.assertIn('href="?chave=cron&amp;webhook=1"', pagina)
+
+    def test_ligar_recebimento_cadastra_o_webhook_com_a_chave_derivada(self):
+        from autorizacao import token_webhook_whatsapp
+        Zaptos.estado = "connected"
+        status, pagina = self.get("?chave=cron&webhook=1")
+        (hook,) = Zaptos.webhooks
+        self.assertTrue(hook["url"].endswith(
+            f"/api/webhooks/zaptos?chave={token_webhook_whatsapp()}"))
+        self.assertNotIn("cron", hook["url"].split("?")[1].replace(token_webhook_whatsapp(), ""))
+        self.assertEqual((hook["events"], hook["excludeMessages"]),
+                         (["messages"], ["wasSentByApi", "isGroupYes"]))
+        self.assertIn("Recebimento de mensagens ligado", pagina)
+        self.assertNotIn(token_webhook_whatsapp(), pagina)
 
     def test_token_errado_explica_o_que_conferir(self):
         Zaptos.http_status = 401
