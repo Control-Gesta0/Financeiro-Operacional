@@ -1,9 +1,9 @@
 """Envio pelo WhatsApp via Zaptos (API no mesmo formato da uazapi).
 
-Configuração na Vercel: ZAPTOS_URL (ex.: https://api.zaptoswpp.com/whatsapp, o servidor
-onde está a instância) e ZAPTOS_TOKEN (token da instância). Os nomes antigos
-UAZAPI_URL e UAZAPI_TOKEN continuam valendo.
-Documentação: https://zaptoswpp-api-ptbr.apidocumentation.com/zaptoswpp-api-pt-br
+Configuração na Vercel: ZAPTOS_URL (ex.: https://api.zaptos.com.br, o servidor onde
+está a instância) e ZAPTOS_TOKEN (token da instância, nunca o admintoken). Os nomes
+antigos UAZAPI_URL e UAZAPI_TOKEN continuam valendo.
+Documentação: https://docs.zaptos.com.br/
 """
 import json
 import os
@@ -29,13 +29,13 @@ def _token():
     return os.environ.get("ZAPTOS_TOKEN") or os.environ.get("UAZAPI_TOKEN")
 
 
-def _post(caminho, corpo):
+def _chamar(metodo, caminho, corpo=None):
     url, token = _url(), _token()
-    if not (url and token and corpo.get("number")):
-        raise ErroWhatsapp("ZAPTOS_URL, ZAPTOS_TOKEN ou destino não configurados")
-    req = urllib.request.Request(
-        f"{url}{caminho}", method="POST", data=json.dumps(corpo).encode(),
-        headers={"token": token, "Content-Type": "application/json"})
+    if not (url and token):
+        raise ErroWhatsapp("ZAPTOS_URL ou ZAPTOS_TOKEN não configurados")
+    dados = json.dumps(corpo).encode() if corpo is not None else None
+    req = urllib.request.Request(f"{url}{caminho}", method=metodo, data=dados,
+                                 headers={"token": token, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             resposta = r.read()
@@ -47,6 +47,22 @@ def _post(caminho, corpo):
         return json.loads(resposta or b"{}")
     except json.JSONDecodeError:
         return {}
+
+
+def _post(caminho, corpo):
+    if not corpo.get("number"):
+        raise ErroWhatsapp("destino do WhatsApp não configurado")
+    return _chamar("POST", caminho, corpo)
+
+
+def status():
+    """{"instance": {status, qrcode, paircode, profileName, ...}, "status": {connected, jid}}."""
+    return _chamar("GET", "/instance/status")
+
+
+def conectar():
+    """Inicia a conexão por QR Code (válido por cerca de 2 minutos)."""
+    return _chamar("POST", "/instance/connect", {})
 
 
 def enviar_texto(destino, texto):
