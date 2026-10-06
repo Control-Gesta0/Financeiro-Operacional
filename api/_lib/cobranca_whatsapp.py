@@ -9,9 +9,9 @@ Regras combinadas com o financeiro (05/10/2026):
 - vai para o celular do cadastro do cliente no ERP Lite;
 - formato: mensagens comuns (o WhatsApp é conectado por QR Code, sem botões):
   1) texto com valor, vencimento, linha digitável e link do boleto; 2) o PDF do boleto
-  como documento (só na etapa "boleto"); 3) o Pix copia e cola sozinho, para o cliente
-  copiar com um toque. O Pix é sempre o da própria cobrança, nunca a chave Pix fixa:
-  senão o pagamento não fica ligado à cobrança e a baixa automática não acha a receita.
+  como documento, que já traz o QR Code Pix da própria cobrança. O Pix copia e cola
+  separado saiu em 06/10/2026 a pedido do financeiro (clientes colavam o código no
+  campo de chave Pix do banco e recebiam "chave inválida").
 
 Antes de cada envio a cobrança é consultada no Asaas: só segue se estiver PENDING ou
 OVERDUE. Cada envio deixa uma marca nas observações da receita, então rodar de novo
@@ -149,15 +149,12 @@ def textos(etapa, nome, receita):
 
 
 def dados_pagamento(cobranca, asaas):
-    """Linha digitável e Pix copia e cola da cobrança (o que existir)."""
-    dados = {}
-    for chave, consulta, campo in (("linha", "linha_digitavel", "identificationField"),
-                                   ("pix", "pix_qrcode", "payload")):
-        try:
-            dados[chave] = (getattr(asaas, consulta)(cobranca["id"]) or {}).get(campo)
-        except getattr(asaas, "ErroAsaas", ValueError):
-            dados[chave] = None  # sem chave Pix na conta, ou boleto ainda sem registro
-    return dados
+    """Linha digitável do boleto (None se o Asaas ainda não tiver)."""
+    try:
+        linha = (asaas.linha_digitavel(cobranca["id"]) or {}).get("identificationField")
+    except getattr(asaas, "ErroAsaas", ValueError):
+        linha = None  # boleto ainda sem registro: segue com o link e o PDF
+    return {"linha": linha}
 
 
 def texto_principal(texto, cobranca, pagamento):
@@ -167,32 +164,24 @@ def texto_principal(texto, cobranca, pagamento):
     link = cobranca.get("invoiceUrl") or cobranca.get("bankSlipUrl")
     if link:
         linhas += ["", f"Boleto e fatura: {link}"]
-    if pagamento.get("pix"):
-        linhas += ["", "O Pix copia e cola vai na próxima mensagem."]
     return "\n".join(linhas)
 
 
 def enviar(numero, etapa, texto, receita, cobranca, pagamento):
-    """Manda o texto e, em seguida, o PDF do boleto e o Pix copia e cola.
+    """Manda o texto e, em seguida, o PDF do boleto (com o QR Code Pix), em todas as etapas.
 
     Se o texto falhar, nada foi enviado e a etapa fica para o próximo cron. Depois que
-    ele saiu, uma falha no PDF ou no Pix só é anotada: repetir mandaria o texto de novo.
+    ele saiu, uma falha no PDF só é anotada: repetir mandaria o texto de novo.
     """
     whatsapp.enviar_texto(numero, texto_principal(texto, cobranca, pagamento))
     enviados, falhas = ["texto"], {}
-    extras = []
-    if etapa == "boleto" and cobranca.get("bankSlipUrl"):
+    if cobranca.get("bankSlipUrl"):
         fatura = cobranca.get("invoiceNumber") or receita.get("id_conta_rec")
-        extras.append(("pdf", lambda: whatsapp.enviar_documento(
-            numero, cobranca["bankSlipUrl"], f"boleto-{fatura}.pdf")))
-    if pagamento.get("pix"):
-        extras.append(("pix", lambda: whatsapp.enviar_texto(numero, pagamento["pix"])))
-    for nome, envio in extras:
         try:
-            envio()
-            enviados.append(nome)
+            whatsapp.enviar_documento(numero, cobranca["bankSlipUrl"], f"boleto-{fatura}.pdf")
+            enviados.append("pdf")
         except whatsapp.ErroWhatsapp as e:
-            falhas[nome] = str(e)
+            falhas["pdf"] = str(e)
     return enviados, falhas
 
 

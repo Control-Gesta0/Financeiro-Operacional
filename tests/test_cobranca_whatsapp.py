@@ -142,21 +142,21 @@ class TestBoleto(unittest.TestCase):
         self.assertIn("vencimento em 20/10/2026", r["resultados"][0]["texto"])
         self.assertEqual(v.receitas[1]["observacoes_rec"], OBS)
 
-    def test_envia_texto_pdf_e_pix_da_cobranca_e_marca(self):
+    def test_envia_texto_e_pdf_sem_pix_separado_e_marca(self):
         v = Vhsys([receita()], {77: CLIENTE})
         r, msgs = rodar(v, Asaas())
-        self.assertEqual([m[0] for m in msgs], ["texto", "pdf", "pix"])
+        self.assertEqual([m[0] for m in msgs], ["texto", "pdf"])  # o PDF já tem o QR Pix
         self.assertEqual({m[1] for m in msgs}, {"5511988887777"})
         texto = msgs[0][2]
         self.assertIn("Olá, Csl Distribuidora LTDA!", texto)
         self.assertIn("R$ 350,00", texto)
         self.assertIn("Linha digitável:\n4619111", texto)
         self.assertIn("https://www.asaas.com/i/pay_abc", texto)
-        self.assertEqual(msgs[2][2], "00020126PIX-pay_abc")  # Pix da cobrança, não chave fixa
+        self.assertNotIn("Pix copia e cola", texto)
         self.assertEqual(msgs[1][3], "boleto-928695642.pdf")
         res = r["resultados"][0]
         self.assertEqual((res["resultado"], res["marca_gravada"]), ("enviado", True))
-        self.assertIn("WhatsApp: boleto enviado em 06/10/2026 (texto, pdf, pix).",
+        self.assertIn("WhatsApp: boleto enviado em 06/10/2026 (texto, pdf).",
                       v.receitas[1]["observacoes_rec"])
         self.assertTrue(v.receitas[1]["observacoes_rec"].startswith(OBS))
 
@@ -166,17 +166,16 @@ class TestBoleto(unittest.TestCase):
         r, msgs = rodar(v, Asaas())
         self.assertEqual((r["resultados"], msgs), ([], []))
 
-    def test_sem_pix_manda_texto_e_pdf(self):
+    def test_conta_sem_pix_manda_o_mesmo(self):
         v = Vhsys([receita()], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(sem_pix=True))
         self.assertEqual([m[0] for m in msgs], ["texto", "pdf"])
-        self.assertNotIn("próxima mensagem", msgs[0][2])
 
     def test_falha_no_pdf_nao_repete_o_texto(self):
         v = Vhsys([receita()], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(), falhar={"pdf"})
         res = r["resultados"][0]
-        self.assertEqual((res["resultado"], res["mensagens"]), ("enviado", ["texto", "pix"]))
+        self.assertEqual((res["resultado"], res["mensagens"]), ("enviado", ["texto"]))
         self.assertIn("pdf", res["falhas"])
         self.assertIn("boleto enviado", v.receitas[1]["observacoes_rec"])
 
@@ -222,12 +221,12 @@ class TestLembretes(unittest.TestCase):
         r, msgs = rodar(v, Asaas(), etapas=("vencimento", "atraso"))
         self.assertEqual(r["resultados"][0]["etapa"], "vencimento")
         self.assertIn("vence hoje (06/10/2026)", msgs[0][2])
-        self.assertEqual([m[0] for m in msgs], ["texto", "pix"])  # sem PDF no lembrete
+        self.assertEqual([m[0] for m in msgs], ["texto", "pdf"])  # lembrete também leva o PDF
         self.assertIn("lembrete de vencimento enviado em 06/10/2026",
                       v.receitas[1]["observacoes_rec"])
 
     def test_boleto_mandado_hoje_dispensa_lembrete(self):
-        obs = OBS + "\nWhatsApp: boleto enviado em 06/10/2026 (texto, pdf, pix)."
+        obs = OBS + "\nWhatsApp: boleto enviado em 06/10/2026 (texto, pdf)."
         v = Vhsys([receita(venc="2026-10-06", obs=obs)], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(), etapas=("vencimento", "atraso"))
         self.assertEqual(msgs, [])
