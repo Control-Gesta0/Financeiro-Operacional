@@ -167,8 +167,11 @@ def identificar(numero, chat, vhsys, chatid, hoje):
     sem ele, varre os clientes uma vez (e no máximo uma vez por dia se não achar)."""
     guardado = str(chat.get(CAMPO_CLIENTES) or "")
     if guardado and not guardado.startswith("nao:"):
-        return [c for c in (vhsys.consultar_cliente(i) for i in guardado.split(",") if i) if c]
-    if guardado == f"nao:{hoje.isoformat()}":
+        clientes = [vhsys.consultar_cliente(i) for i in guardado.split(",") if i]
+        if all(c and c.get("lixeira") != "Sim" for c in clientes):
+            return clientes
+        # algum cadastro ligado ao número foi apagado: refaz a busca
+    elif guardado == f"nao:{hoje.isoformat()}":
         return []
     alvo = variantes(numero)
     achados = [c for c in vhsys.listar_clientes()

@@ -185,6 +185,15 @@ class TestIdentificacao(unittest.TestCase):
         rodar(evento(messageid="m3"), vhsys=v, zaptos=z)
         self.assertEqual(v.varreduras, 1)  # a segunda mensagem usa o vínculo guardado
 
+    def test_cliente_ligado_que_foi_para_a_lixeira_refaz_a_busca(self):
+        apagado = dict(CLIENTE, id_cliente=78, lixeira="Sim")
+        v = Vhsys([CLIENTE, apagado], [receita(1, "2026-10-20")])
+        v.listar_clientes = lambda: (setattr(v, "varreduras", v.varreduras + 1), [CLIENTE])[1]
+        z = Zaptos({"lead_field19": "77,78"})
+        _, _, ia = rodar(evento(), vhsys=v, zaptos=z)
+        self.assertEqual((v.varreduras, z.chat["lead_field19"]), (1, "77"))
+        self.assertEqual(len(ia[0]["dados_do_cliente"]), 1)
+
     def test_desconhecido_varre_no_maximo_uma_vez_por_dia(self):
         v = Vhsys([], [])
         z = Zaptos()
