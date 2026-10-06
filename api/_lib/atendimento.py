@@ -13,14 +13,18 @@ Regras combinadas com o financeiro (06/10/2026):
 - dados financeiros só depois de validar o CNPJ/CPF: o número precisa estar no
   cadastro (celular ou telefone) E o documento informado precisa ser de um dos clientes
   ligados a esse número; aí aparecem só os dados desse cliente (o mesmo número pode
-  estar em várias empresas; outro CNPJ ligado a ele troca de empresa). Documento que
-  não confere, ou número fora do cadastro: não mostra nada e passa para a equipe, com a
-  mesma resposta nos dois casos (CNPJ é público; o robô não revela quem é cliente).
+  estar em várias empresas; outro CNPJ ligado a ele troca de empresa);
+- documento de um cliente que não está ligado ao número (número novo, celular trocado):
+  os boletos em aberto vão para o WhatsApp do cadastro daquele cliente, nunca para
+  quem pediu, no máximo uma vez por dia por cliente; quem pediu recebe sempre a mesma
+  resposta (CNPJ é público; o robô não revela quem é cliente) e a conversa passa para a
+  equipe, que confirma e atualiza o celular no ERP.
 
 Estado sem banco de dados, nos campos da própria conversa na Zaptos:
 chatbot_disableUntil (pausa), lead_field18 (clientes já validados por CNPJ/CPF),
 lead_field19 (clientes do ERP ligados ao número) e lead_field20 (última mensagem
-tratada, para não responder duas vezes).
+tratada, para não responder duas vezes); na conversa do número do cadastro,
+lead_field17 guarda a data do último envio "a pedido de outro número".
 
 ATENDIMENTO_MODO: desligado (padrão) | teste (só responde aos números de
 ATENDIMENTO_TESTE, padrão CONCILIACAO_WHATSAPP) | ativo.
@@ -37,6 +41,7 @@ import whatsapp
 BRT = dt.timezone(dt.timedelta(hours=-3))
 PAUSA_HUMANO = dt.timedelta(hours=12)
 ENCAMINHAR_PADRAO = "551144181102"
+CAMPO_ENVIO_CADASTRO = "lead_field17"
 CAMPO_VALIDADOS, CAMPO_CLIENTES, CAMPO_ULTIMA = "lead_field18", "lead_field19", "lead_field20"
 MAX_BOLETOS, MAX_PDFS = 10, 3
 MODELO_PADRAO = "claude-opus-5-5"
@@ -350,7 +355,8 @@ def processar(payload, vhsys, asaas, ia=consultar_ia, agora=None):
     if doc:
         dono = next((c for c in clientes if _digitos(c.get("cnpj_cliente")) == doc), None)
         if not dono:  # número fora do cadastro ou documento de outro cliente
-            return _documento_nao_confere(numero, chatid, agora)
+            return _documento_fora_do_cadastro(doc, numero, chatid, vhsys, asaas, agora,
+                                               hoje, teste)
         validado_agora = str(dono["id_cliente"]) not in validados
         validados = {str(dono["id_cliente"])}  # a empresa da conversa passa a ser esta
         whatsapp.editar_chat(chatid, {CAMPO_VALIDADOS: str(dono["id_cliente"])})
@@ -365,17 +371,55 @@ def processar(payload, vhsys, asaas, ia=consultar_ia, agora=None):
     return executar(decisao, numero, chatid, texto, clientes, pdfs, agora, teste)
 
 
-RESPOSTA_DOCUMENTO = ("Obrigado! Por segurança, vou passar para a equipe financeira confirmar "
-                      "o cadastro deste WhatsApp; a gente responde por aqui mesmo.")
+RESPOSTA_DOCUMENTO = ("Obrigado! Se esse CNPJ/CPF estiver cadastrado, os boletos em aberto foram "
+                      "enviados para o WhatsApp do cadastro. Se o seu número mudou, a equipe "
+                      "financeira atualiza por aqui mesmo.")
 
 
-def _documento_nao_confere(numero, chatid, agora):
-    """CPF/CNPJ que não é de nenhum cliente ligado a este número (ou número fora do
-    cadastro): não mostra dados (CNPJ é público) e passa para a equipe, sempre com a mesma
-    resposta, para o robô não revelar se o documento é de um cliente."""
+def mensagem_para_cadastro(dados_cliente, solicitante):
+    """Boletos em aberto para o WhatsApp do cadastro, pedidos por outro número."""
+    linhas = [f"Olá! Recebemos pelo WhatsApp {whatsapp.mascarar(solicitante)} um pedido dos "
+              f"boletos em aberto de {dados_cliente['cliente']}."]
+    boletos = dados_cliente["boletos_em_aberto"]
+    if boletos:
+        linhas.append("")
+        for b in boletos:
+            linha = f"• {b['descricao']}: {b['valor']}, vencimento {b['vencimento']}"
+            if b["situacao"] != "em aberto":
+                linha += f" ({b['situacao']})"
+            linhas.append(linha + (f"\n  {b['link']}" if b["link"] else ""))
+    else:
+        linhas += ["", "No momento não há boletos em aberto."]
+    linhas += ["", "Se não foi você quem pediu, pode desconsiderar esta mensagem."]
+    return "\n".join(linhas)
+
+
+def _documento_fora_do_cadastro(doc, numero, chatid, vhsys, asaas, agora, hoje, teste):
+    """CPF/CNPJ que não é de nenhum cliente ligado a este número: os boletos vão para o
+    WhatsApp do cadastro do dono do documento (no máximo uma vez por dia), nunca para quem
+    pediu. A resposta a quem pediu é sempre a mesma, para não revelar quem é cliente, e a
+    conversa passa para a equipe."""
+    feito = _resultado("passar_para_financeiro", motivo="documento não ligado a este WhatsApp")
+    dono = next((c for c in vhsys.listar_clientes() if _digitos(c.get("cnpj_cliente")) == doc), None)
+    destino = whatsapp.normalizar((dono or {}).get("celular_cliente"))
+    if destino and not destino.endswith("@g.us"):
+        destino = whatsapp.destino_verificado(destino)
+    if dono and destino and not (variantes(destino) & variantes(numero)):
+        conversa_destino = whatsapp.detalhes_chat(destino)
+        if conversa_destino.get(CAMPO_ENVIO_CADASTRO) == hoje.isoformat():
+            feito["envio_cadastro"] = "já enviado hoje"
+        else:
+            dados, _ = dados_financeiros([dono], vhsys, asaas, hoje)
+            texto = mensagem_para_cadastro(dados[0], numero)
+            para = destino
+            if teste:  # no teste vai para o próprio número de teste, nunca ao cliente
+                texto, para = f"[TESTE: iria para +{destino}]\n{texto}", numero
+            whatsapp.enviar_texto(para, texto)
+            whatsapp.editar_chat(f"{destino}@s.whatsapp.net", {CAMPO_ENVIO_CADASTRO: hoje.isoformat()})
+            feito["envio_cadastro"] = whatsapp.mascarar(para)
     whatsapp.enviar_texto(numero, RESPOSTA_DOCUMENTO)
     pausar(chatid, agora)
-    return _resultado("passar_para_financeiro", motivo="documento não confere com o WhatsApp")
+    return feito
 
 
 def executar(decisao, numero, chatid, texto, clientes, pdfs, agora, teste=False):

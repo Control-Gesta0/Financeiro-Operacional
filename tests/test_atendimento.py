@@ -225,9 +225,38 @@ class TestIdentificacao(unittest.TestCase):
         v = Vhsys([CLIENTE, outro], [receita(1, "2026-10-20")])
         r, z, ia = rodar(evento("cpf 529.982.247-25"), vhsys=v, zaptos=Zaptos({}))
         self.assertEqual(ia, [])
-        self.assertEqual(z.textos, [(NUMERO, atendimento.RESPOSTA_DOCUMENTO)])
+        (para_cadastro, texto), (para_quem_pediu, resposta) = z.textos
+        # os boletos vão para o WhatsApp do cadastro do dono do documento...
+        self.assertEqual(para_cadastro, "5521977776666")
+        self.assertIn("pedido dos boletos em aberto de CSL DISTRIBUIDORA LTDA", texto)
+        self.assertIn("5511*****7777", texto)  # avisa de qual número veio o pedido
+        # ...e quem pediu só recebe a resposta padrão, sem dados
+        self.assertEqual((para_quem_pediu, resposta), (NUMERO, atendimento.RESPOSTA_DOCUMENTO))
         self.assertNotIn("lead_field18", z.chat)
         self.assertIn("chatbot_disableUntil", z.chat)
+        self.assertEqual(r["envio_cadastro"], "5521*****6666")
+
+    def test_envio_ao_cadastro_uma_vez_por_dia_e_no_teste_volta_para_o_teste(self):
+        outro = dict(CLIENTE, id_cliente=90, celular_cliente="(21) 97777-6666",
+                     cnpj_cliente="529.982.247-25")
+        v = Vhsys([CLIENTE, outro], [receita(1, "2026-10-20")])
+        z = Zaptos({})
+        r, z, _ = rodar(evento("529.982.247-25"), vhsys=v, zaptos=z, modo="teste",
+                        env={"ATENDIMENTO_TESTE": NUMERO})
+        self.assertEqual(z.textos[0][0], NUMERO)
+        self.assertTrue(z.textos[0][1].startswith("[TESTE: iria para +5521977776666]"))
+        z.chat.pop("chatbot_disableUntil")
+        r, z, _ = rodar(evento("529.982.247-25", messageid="m9"), vhsys=v, zaptos=z,
+                        modo="teste", env={"ATENDIMENTO_TESTE": NUMERO})
+        self.assertEqual(r["envio_cadastro"], "já enviado hoje")
+        self.assertEqual(len(z.textos), 3)  # 2 do primeiro pedido + só a resposta padrão
+
+    def test_dono_do_documento_sem_celular_so_resposta_padrao(self):
+        outro = dict(CLIENTE, id_cliente=90, celular_cliente="", cnpj_cliente="529.982.247-25")
+        r, z, _ = rodar(evento("529.982.247-25"), vhsys=Vhsys([CLIENTE, outro], []),
+                        zaptos=Zaptos({}))
+        self.assertEqual(z.textos, [(NUMERO, atendimento.RESPOSTA_DOCUMENTO)])
+        self.assertNotIn("envio_cadastro", r)
 
     def test_mesmo_numero_em_duas_empresas_o_documento_escolhe(self):
         segunda = dict(CLIENTE, id_cliente=91, razao_cliente="SEGUNDA LTDA",
