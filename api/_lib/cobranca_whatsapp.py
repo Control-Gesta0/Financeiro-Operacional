@@ -1,11 +1,12 @@
 """Cobrança pelo WhatsApp (Zaptos) das receitas emitidas no Asaas pela integração.
 
 Regras combinadas com o financeiro (05/10/2026):
-- etapa "boleto": BOLETO_DIAS_ANTES dias (padrão 10) antes do vencimento, ou logo
-  depois da emissão se o vencimento estiver mais perto que isso; roda no cron da
-  emissão, só em horário comercial (ENVIO_DAS..ENVIO_ATE, horário de Brasília). Assim
-  uma cobrança parcelada (cada parcela é uma receita) não chega toda de uma vez: cada
-  parcela vai perto do seu vencimento;
+- etapa "boleto": a cobrança única e a 1ª parcela de uma parcelada vão logo depois da
+  emissão; as demais parcelas vão BOLETO_DIAS_ANTES dias (padrão 10) antes do próprio
+  vencimento (ou já, se vencerem antes disso). Cada parcela é uma receita no ERP; as
+  da mesma cobrança são reconhecidas pelo cliente + "identificacao" (OS, pedido) ou,
+  sem ela, pelo minuto do cadastro. Roda no cron da emissão, só em horário comercial
+  (ENVIO_DAS..ENVIO_ATE, horário de Brasília);
 - etapa "vencimento": na manhã do dia do vencimento, se ainda estiver em aberto;
 - etapa "atraso": LEMBRETE_DIAS_ATRASO dias (padrão 1) depois do vencimento, contados
   a partir do primeiro dia útil quando o vencimento cai no fim de semana;
@@ -50,6 +51,9 @@ def agora():
 
 def em_horario_comercial(momento=None):
     return ENVIO_DAS <= (momento or agora()).hour < ENVIO_ATE
+
+
+PRIMEIRA_NOVA_POR = 7  # dias após o cadastro em que a 1ª parcela ainda vai "na hora"
 
 
 def dias_antes():
@@ -118,6 +122,40 @@ def marca_enviada(receita, etapa):
     m = re.search(re.escape(MARCAS[etapa]) + r" em (\d{2}/\d{2}/\d{4})",
                   receita.get("observacoes_rec") or "")
     return m.group(1) if m else None
+
+
+def chave_grupo(receita):
+    """Receitas com a mesma chave são parcelas da mesma cobrança."""
+    identificacao = str(receita.get("identificacao") or "").strip()
+    if identificacao not in ("", "0"):
+        return (str(receita.get("id_cliente")), identificacao)
+    return (str(receita.get("id_cliente")), str(receita.get("data_cad_rec") or "")[:16])
+
+
+def e_primeira_parcela(receita, vhsys, cache):
+    """True se a receita é a de vencimento mais cedo da sua cobrança, contando as parcelas
+    já pagas (se o cliente pagou a 1ª na hora, a 2ª não vira "primeira")."""
+    cliente = str(receita.get("id_cliente"))
+    if cliente not in cache:
+        cache[cliente] = vhsys.receitas_do_cliente(cliente)
+    grupo = [r for r in cache[cliente] if chave_grupo(r) == chave_grupo(receita)] or [receita]
+    primeira = min(grupo, key=lambda r: (emissao._data_iso(r.get("vencimento_rec")),
+                                         int(r.get("id_conta_rec") or 0)))
+    return str(primeira.get("id_conta_rec")) == str(receita.get("id_conta_rec"))
+
+
+def boleto_cabe_hoje(receita, hoje, vhsys, cache):
+    if marca_enviada(receita, "boleto"):
+        return False
+    vencimento = emissao._data_iso(receita.get("vencimento_rec"))
+    if vencimento < hoje.isoformat():
+        return False  # vencida: quem cuida é o aviso de atraso
+    if vencimento <= (hoje + dt.timedelta(days=dias_antes())).isoformat():
+        return True
+    cadastro = emissao._data_iso(receita.get("data_cad_rec"))
+    if cadastro < (hoje - dt.timedelta(days=PRIMEIRA_NOVA_POR)).isoformat():
+        return False  # antiga: a 1ª parcela já teve a sua vez
+    return e_primeira_parcela(receita, vhsys, cache)
 
 
 def etapa_do_dia(receita, hoje):
@@ -247,24 +285,19 @@ def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=
     hoje = hoje or agora().date()
     erros = (ValueError, whatsapp.ErroWhatsapp, getattr(asaas, "ErroAsaas", ValueError),
              getattr(vhsys, "ErroVhsys", ValueError))
-    resultados = []
+    resultados, cache = [], {}
     lista = receitas if receitas is not None else vhsys.receitas_modificadas_desde(desde)
     for receita in lista:
         if receita.get("liquidado_rec") == "Sim" or not id_cobranca(receita):
             continue
         if str(receita.get("id_banco") or "") != emissao.conta_asaas():
             continue
-        if "boleto" in etapas:
-            vencimento = emissao._data_iso(receita.get("vencimento_rec"))
-            venceu = vencimento < hoje.isoformat()
-            cedo = vencimento > (hoje + dt.timedelta(days=dias_antes())).isoformat()
-            etapa = None if marca_enviada(receita, "boleto") or venceu or cedo else "boleto"
-        else:
-            etapa = etapa_do_dia(receita, hoje)
-            etapa = etapa if etapa in etapas else None
-        if not etapa:
+        etapa = "boleto" if "boleto" in etapas else etapa_do_dia(receita, hoje)
+        if etapa not in etapas:
             continue
         try:
+            if etapa == "boleto" and not boleto_cabe_hoje(receita, hoje, vhsys, cache):
+                continue
             resultados.append(cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje))
         except erros as e:  # um cliente com problema não trava os demais
             resultados.append({"receita": receita.get("id_conta_rec"),

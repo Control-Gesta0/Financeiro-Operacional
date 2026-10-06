@@ -4,7 +4,8 @@ Chamado pelo cron da Vercel a cada 15 minutos (vercel.json). Só grava quando
 EMISSAO_MODO=ativo; antes disso, e em qualquer chamada manual sem aplicar=1, é prévia.
 
 Depois de emitir, manda o boleto ao cliente pelo WhatsApp (etapa "boleto" de
-cobranca_whatsapp: 10 dias antes do vencimento, ou já se vencer antes disso), só com
+cobranca_whatsapp: na hora para a cobrança única e a 1ª parcela; as demais parcelas
+10 dias antes do vencimento), só com
 WHATSAPP_COBRANCA_MODO=ativo e, no cron, em horário comercial.
 
 Uso manual (com a CRON_SECRET em ?chave=):
