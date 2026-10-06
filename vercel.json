@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "api/webhooks/zaptos.py": { "maxDuration": 60 }
+  },
   "crons": [
     { "path": "/api/conciliacao", "schedule": "0 10 * * *" },
     { "path": "/api/emitir", "schedule": "*/15 * * * *" },
