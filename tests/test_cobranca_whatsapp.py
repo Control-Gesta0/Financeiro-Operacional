@@ -67,7 +67,7 @@ class Asaas:
         return {"payload": f"00020126PIX-{pid}"}
 
 
-def receita(id_=1, venc="2026-10-20", obs=OBS, banco="1320902", liquidado="Nao", cliente=77):
+def receita(id_=1, venc="2026-10-14", obs=OBS, banco="1320902", liquidado="Nao", cliente=77):
     return {"id_conta_rec": id_, "id_banco": banco, "vencimento_rec": venc, "valor_rec": "350.00",
             "observacoes_rec": obs, "liquidado_rec": liquidado, "id_cliente": cliente,
             "nome_cliente": "CSL DISTRIBUIDORA", "nome_conta": "Mensalidade outubro"}
@@ -139,7 +139,7 @@ class TestBoleto(unittest.TestCase):
         v = Vhsys([receita()], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(), aplicar=False)
         self.assertEqual((r["resumo"], msgs), ({"seria_enviado": 1}, []))
-        self.assertIn("vencimento em 20/10/2026", r["resultados"][0]["texto"])
+        self.assertIn("vencimento em 14/10/2026", r["resultados"][0]["texto"])
         self.assertEqual(v.receitas[1]["observacoes_rec"], OBS)
 
     def test_envia_texto_e_pdf_sem_pix_separado_e_marca(self):
@@ -207,6 +207,25 @@ class TestBoleto(unittest.TestCase):
         v = Vhsys([receita()], {77: {**CLIENTE, "celular_cliente": ""}})
         r, msgs = rodar(v, Asaas())
         self.assertEqual((r["resumo"], msgs), ({"sem_whatsapp": 1}, []))
+
+    def test_parcelas_vao_10_dias_antes_de_cada_vencimento(self):
+        # cobrança em 3 parcelas emitida em 06/10: cada parcela é uma receita no ERP
+        v = Vhsys([receita(1, venc="2026-10-16"), receita(2, venc="2026-11-16"),
+                   receita(3, venc="2026-12-16")], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas())
+        self.assertEqual([x["receita"] for x in r["resultados"]], [1])  # 10 dias: vai já
+        r, _ = rodar(v, Asaas(), hoje=dt.date(2026, 11, 5))
+        self.assertEqual(r["resultados"], [])  # 2ª parcela ainda a 11 dias
+        r, _ = rodar(v, Asaas(), hoje=dt.date(2026, 11, 6))
+        self.assertEqual([x["receita"] for x in r["resultados"]], [2])
+        self.assertIn("boleto enviado em 06/11/2026", v.receitas[2]["observacoes_rec"])
+        self.assertNotIn("WhatsApp", v.receitas[3]["observacoes_rec"])
+
+    def test_antecedencia_configuravel(self):
+        v = Vhsys([receita(venc="2026-10-16")], {77: CLIENTE})
+        with mock.patch.dict(os.environ, {"BOLETO_DIAS_ANTES": "5"}):
+            r, _ = rodar(v, Asaas(), aplicar=False)
+        self.assertEqual(r["resultados"], [])
 
     def test_fora_do_escopo_nao_aparece(self):
         v = Vhsys([receita(1, obs="sem cobrança"), receita(2, banco="1318757"),

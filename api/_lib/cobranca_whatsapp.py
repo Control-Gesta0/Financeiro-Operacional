@@ -1,8 +1,11 @@
 """Cobrança pelo WhatsApp (Zaptos) das receitas emitidas no Asaas pela integração.
 
 Regras combinadas com o financeiro (05/10/2026):
-- etapa "boleto": logo depois da emissão, no mesmo cron da emissão, só em horário
-  comercial (ENVIO_DAS..ENVIO_ATE, horário de Brasília);
+- etapa "boleto": BOLETO_DIAS_ANTES dias (padrão 10) antes do vencimento, ou logo
+  depois da emissão se o vencimento estiver mais perto que isso; roda no cron da
+  emissão, só em horário comercial (ENVIO_DAS..ENVIO_ATE, horário de Brasília). Assim
+  uma cobrança parcelada (cada parcela é uma receita) não chega toda de uma vez: cada
+  parcela vai perto do seu vencimento;
 - etapa "vencimento": na manhã do dia do vencimento, se ainda estiver em aberto;
 - etapa "atraso": LEMBRETE_DIAS_ATRASO dias (padrão 1) depois do vencimento, contados
   a partir do primeiro dia útil quando o vencimento cai no fim de semana;
@@ -47,6 +50,13 @@ def agora():
 
 def em_horario_comercial(momento=None):
     return ENVIO_DAS <= (momento or agora()).hour < ENVIO_ATE
+
+
+def dias_antes():
+    try:
+        return max(0, int(os.environ.get("BOLETO_DIAS_ANTES") or 10))
+    except ValueError:
+        return 10
 
 
 def dias_atraso():
@@ -245,8 +255,10 @@ def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=
         if str(receita.get("id_banco") or "") != emissao.conta_asaas():
             continue
         if "boleto" in etapas:
-            venceu = emissao._data_iso(receita.get("vencimento_rec")) < hoje.isoformat()
-            etapa = None if marca_enviada(receita, "boleto") or venceu else "boleto"
+            vencimento = emissao._data_iso(receita.get("vencimento_rec"))
+            venceu = vencimento < hoje.isoformat()
+            cedo = vencimento > (hoje + dt.timedelta(days=dias_antes())).isoformat()
+            etapa = None if marca_enviada(receita, "boleto") or venceu or cedo else "boleto"
         else:
             etapa = etapa_do_dia(receita, hoje)
             etapa = etapa if etapa in etapas else None
