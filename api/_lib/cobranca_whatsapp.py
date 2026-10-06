@@ -2,7 +2,8 @@
 
 Regras combinadas com o financeiro (05/10/2026):
 - etapa "boleto": a cobrança única e a 1ª parcela de uma parcelada vão logo depois da
-  emissão; as demais parcelas vão BOLETO_DIAS_ANTES dias (padrão 10) antes do próprio
+  emissão (a 1ª leva o resumo: total, cada parcela com valor e vencimento, e o aviso de
+  que os próximos boletos vão 10 dias antes de cada vencimento); as demais parcelas vão BOLETO_DIAS_ANTES dias (padrão 10) antes do próprio
   vencimento (ou já, se vencerem antes disso). Cada parcela é uma receita no ERP; as
   da mesma cobrança são reconhecidas pelo cliente + "identificacao" (OS, pedido) ou,
   sem ela, pelo minuto do cadastro. Roda no cron da emissão, só em horário comercial
@@ -132,16 +133,40 @@ def chave_grupo(receita):
     return (str(receita.get("id_cliente")), str(receita.get("data_cad_rec") or "")[:16])
 
 
-def e_primeira_parcela(receita, vhsys, cache):
-    """True se a receita é a de vencimento mais cedo da sua cobrança, contando as parcelas
-    já pagas (se o cliente pagou a 1ª na hora, a 2ª não vira "primeira")."""
+def parcelas_da_cobranca(receita, vhsys, cache):
+    """Parcelas da cobrança da receita (ela inclusive), por vencimento, contando as já
+    pagas. Uma consulta ao VHSYS por cliente; o cache vale para a rodada inteira."""
     cliente = str(receita.get("id_cliente"))
     if cliente not in cache:
         cache[cliente] = vhsys.receitas_do_cliente(cliente)
-    grupo = [r for r in cache[cliente] if chave_grupo(r) == chave_grupo(receita)] or [receita]
-    primeira = min(grupo, key=lambda r: (emissao._data_iso(r.get("vencimento_rec")),
-                                         int(r.get("id_conta_rec") or 0)))
-    return str(primeira.get("id_conta_rec")) == str(receita.get("id_conta_rec"))
+    grupo = [r for r in cache[cliente] if chave_grupo(r) == chave_grupo(receita)]
+    if not any(str(r.get("id_conta_rec")) == str(receita.get("id_conta_rec")) for r in grupo):
+        grupo.append(receita)
+    return sorted(grupo, key=lambda r: (emissao._data_iso(r.get("vencimento_rec")),
+                                        int(r.get("id_conta_rec") or 0)))
+
+
+def posicao_da_parcela(receita, parcelas):
+    ids = [str(r.get("id_conta_rec")) for r in parcelas]
+    return ids.index(str(receita.get("id_conta_rec"))) + 1
+
+
+def e_primeira_parcela(receita, vhsys, cache):
+    """True se a receita é a de vencimento mais cedo da sua cobrança, contando as parcelas
+    já pagas (se o cliente pagou a 1ª na hora, a 2ª não vira "primeira")."""
+    return posicao_da_parcela(receita, parcelas_da_cobranca(receita, vhsys, cache)) == 1
+
+
+def resumo_das_parcelas(parcelas):
+    """Descritivo enviado junto com a 1ª parcela: total, cada parcela e a regra de envio."""
+    total = sum(Decimal(str(r.get("valor_rec") or 0)) for r in parcelas)
+    linhas = [f"Resumo da cobrança: {_reais(total)} em {len(parcelas)} parcelas"]
+    for n, r in enumerate(parcelas, 1):
+        linhas.append(f"• {n}ª parcela: {_reais(r.get('valor_rec'))}, "
+                      f"vencimento em {_data_br(r.get('vencimento_rec'))}")
+    linhas.append(f"Os próximos boletos serão enviados por aqui {dias_antes()} dias antes de "
+                  "cada vencimento.")
+    return "\n".join(linhas)
 
 
 def boleto_cabe_hoje(receita, hoje, vhsys, cache):
@@ -178,14 +203,17 @@ def etapa_do_dia(receita, hoje):
     return None
 
 
-def textos(etapa, nome, receita):
+def textos(etapa, nome, receita, parcela=None):
+    """parcela: (n, total) quando a receita é parcela de uma cobrança parcelada."""
     valor, venc = _reais(receita.get("valor_rec")), _data_br(receita.get("vencimento_rec"))
     descricao = (receita.get("nome_conta") or "").strip()
     saudacao = f"Olá, {nome}!" if nome else "Olá!"
     if etapa == "boleto":
-        corpo = (f"{saudacao} Segue o boleto{f' de {descricao}' if descricao else ''} no valor "
-                 f"de {valor}, com vencimento em {venc}. Dá para pagar pelo Pix ou pelo "
-                 "código de barras.")
+        qual = f" de {descricao}" if descricao else ""
+        if parcela:
+            qual += f" (parcela {parcela[0]} de {parcela[1]})"
+        corpo = (f"{saudacao} Segue o boleto{qual} no valor de {valor}, com vencimento em "
+                 f"{venc}. Dá para pagar pelo Pix ou pelo código de barras.")
     elif etapa == "vencimento":
         corpo = (f"{saudacao} Passando para lembrar que o boleto de {valor} vence hoje "
                  f"({venc}). Se já pagou, pode desconsiderar.")
@@ -233,7 +261,7 @@ def enviar(numero, etapa, texto, receita, cobranca, pagamento):
     return enviados, falhas
 
 
-def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False):
+def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, cache=None):
     id_receita = receita.get("id_conta_rec")
     base = {"receita": id_receita, "cliente": receita.get("nome_cliente"), "etapa": etapa,
             "valor": receita.get("valor_rec"), "vencimento": receita.get("vencimento_rec")}
@@ -253,7 +281,14 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False):
         return {**base, "resultado": "sem_whatsapp",
                 "motivo": "cliente sem celular válido no cadastro do ERP Lite"}
     base["numero"] = whatsapp.mascarar(numero)
-    texto = textos(etapa, nome_cliente(cliente, receita), receita)
+    parcela, resumo = None, ""
+    if etapa == "boleto":
+        parcelas = parcelas_da_cobranca(receita, vhsys, {} if cache is None else cache)
+        if len(parcelas) > 1:
+            parcela = (posicao_da_parcela(receita, parcelas), len(parcelas))
+            if parcela[0] == 1:
+                resumo = "\n\n" + resumo_das_parcelas(parcelas)
+    texto = textos(etapa, nome_cliente(cliente, receita), receita, parcela) + resumo
     if not aplicar:
         return {**base, "resultado": "seria_enviado", "texto": texto}
     numero = whatsapp.destino_verificado(numero)
@@ -298,7 +333,8 @@ def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=
         try:
             if etapa == "boleto" and not boleto_cabe_hoje(receita, hoje, vhsys, cache):
                 continue
-            resultados.append(cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje))
+            resultados.append(cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje,
+                                             cache=cache))
         except erros as e:  # um cliente com problema não trava os demais
             resultados.append({"receita": receita.get("id_conta_rec"),
                                "cliente": receita.get("nome_cliente"), "etapa": etapa,
