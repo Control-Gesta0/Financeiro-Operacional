@@ -59,7 +59,8 @@ class Zaptos:
     """Registra o que o atendimento faria na Zaptos."""
 
     def __init__(self, chat=None, sem_whatsapp=()):
-        self.chat = chat if chat is not None else {}
+        # padrão: número já validado pelo CNPJ do cliente 77
+        self.chat = chat if chat is not None else {"lead_field18": "77"}
         self.textos, self.pdfs, self.edicoes = [], [], []
         self.sem_whatsapp = set(sem_whatsapp)
 
@@ -178,7 +179,7 @@ class TestFiltros(unittest.TestCase):
 class TestIdentificacao(unittest.TestCase):
     def test_acha_pelo_celular_sem_nono_digito_e_guarda_o_vinculo(self):
         v = Vhsys([CLIENTE], [receita(1, "2026-10-20")])
-        z = Zaptos()
+        z = Zaptos({"lead_field18": "77"})
         _, _, ia = rodar(evento(), vhsys=v, zaptos=z)
         self.assertTrue(ia[0]["cliente_identificado"])
         self.assertEqual(z.chat["lead_field19"], "77")
@@ -189,7 +190,7 @@ class TestIdentificacao(unittest.TestCase):
         apagado = dict(CLIENTE, id_cliente=78, lixeira="Sim")
         v = Vhsys([CLIENTE, apagado], [receita(1, "2026-10-20")])
         v.listar_clientes = lambda: (setattr(v, "varreduras", v.varreduras + 1), [CLIENTE])[1]
-        z = Zaptos({"lead_field19": "77,78"})
+        z = Zaptos({"lead_field19": "77,78", "lead_field18": "77"})
         _, _, ia = rodar(evento(), vhsys=v, zaptos=z)
         self.assertEqual((v.varreduras, z.chat["lead_field19"]), (1, "77"))
         self.assertEqual(len(ia[0]["dados_do_cliente"]), 1)
@@ -203,10 +204,48 @@ class TestIdentificacao(unittest.TestCase):
         rodar(evento(messageid="m3"), vhsys=v, zaptos=z)
         self.assertEqual(v.varreduras, 1)
 
+    def test_numero_conhecido_sem_documento_nao_mostra_dados(self):
+        _, _, ia = rodar(evento(), zaptos=Zaptos({}))
+        self.assertEqual((ia[0]["cliente_identificado"], ia[0]["dados_do_cliente"]), (False, []))
+
+    def test_documento_do_cliente_do_numero_libera_os_dados(self):
+        z = Zaptos({})
+        _, z, ia = rodar(evento("11.222.333/0001-81"), zaptos=z)
+        self.assertEqual(z.chat["lead_field18"], "77")
+        self.assertTrue(ia[0]["cliente_identificado"])
+        self.assertTrue(ia[0]["documento_validado_agora"])
+        self.assertEqual(len(ia[0]["dados_do_cliente"][0]["boletos_em_aberto"]), 1)
+        _, _, ia = rodar(evento("e o outro boleto?", messageid="m3"), zaptos=z)
+        self.assertTrue(ia[0]["cliente_identificado"])  # lembra a validação
+        self.assertFalse(ia[0]["documento_validado_agora"])
+
+    def test_documento_de_outro_cliente_nao_libera(self):
+        outro = dict(CLIENTE, id_cliente=90, celular_cliente="(21) 97777-6666",
+                     cnpj_cliente="529.982.247-25")
+        v = Vhsys([CLIENTE, outro], [receita(1, "2026-10-20")])
+        r, z, ia = rodar(evento("cpf 529.982.247-25"), vhsys=v, zaptos=Zaptos({}))
+        self.assertEqual(ia, [])
+        self.assertEqual(z.textos, [(NUMERO, atendimento.RESPOSTA_DOCUMENTO)])
+        self.assertNotIn("lead_field18", z.chat)
+        self.assertIn("chatbot_disableUntil", z.chat)
+
+    def test_mesmo_numero_em_duas_empresas_o_documento_escolhe(self):
+        segunda = dict(CLIENTE, id_cliente=91, razao_cliente="SEGUNDA LTDA",
+                       cnpj_cliente="529.982.247-25")
+        receitas = [receita(1, "2026-10-20"), dict(receita(2, "2026-10-22"), id_cliente=91)]
+        v = Vhsys([CLIENTE, segunda], receitas)
+        z = Zaptos({})
+        _, _, ia = rodar(evento("529.982.247-25"), vhsys=v, zaptos=z)
+        dados = ia[0]["dados_do_cliente"]
+        self.assertEqual((len(dados), dados[0]["cliente"]), (1, "SEGUNDA LTDA"))
+        _, _, ia = rodar(evento("agora a outra: 11.222.333/0001-81", messageid="m3"), vhsys=v, zaptos=z)
+        self.assertEqual(ia[0]["dados_do_cliente"][0]["cliente"], "CSL DISTRIBUIDORA LTDA")
+        self.assertEqual(z.chat["lead_field18"], "77")
+
     def test_cnpj_de_numero_desconhecido_nao_mostra_dados(self):
         for clientes in ([dict(CLIENTE, celular_cliente="")], []):  # achando ou não
             v = Vhsys(clientes, [receita(1, "2026-10-20")])
-            r, z, ia = rodar(evento("11.222.333/0001-81"), vhsys=v)
+            r, z, ia = rodar(evento("11.222.333/0001-81"), vhsys=v, zaptos=Zaptos({}))
             self.assertEqual(ia, [])  # nem chega à IA
             self.assertEqual(z.textos, [(NUMERO, atendimento.RESPOSTA_DOCUMENTO)])
             self.assertNotIn("350", z.textos[0][1])
