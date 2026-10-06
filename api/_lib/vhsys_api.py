@@ -15,6 +15,9 @@ from decimal import Decimal
 BASE_URL = os.environ.get("VHSYS_BASE_URL", "https://api.vhsys.com/v2")
 
 
+SEM_RESULTADO = re.compile(r"Nenhum[a]? .{0,40}encontrad[oa]", re.IGNORECASE)
+
+
 class ErroVhsys(Exception):
     """Falha de comunicação ou resposta de erro do VHSYS (vale tentar de novo)."""
 
@@ -39,7 +42,12 @@ def _chamar(metodo, caminho, params=None, body=None):
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
-        raise ErroVhsys(f"{metodo} {caminho}: HTTP {e.code} {e.read()[:300]!r}") from e
+        corpo = e.read()[:300]
+        # Consulta sem resultado: o VHSYS responde 403 "Nenhuma receita encontrada!" em vez
+        # de uma lista vazia (visto em 06/10/2026 no atendimento do WhatsApp).
+        if metodo == "GET" and e.code == 403 and SEM_RESULTADO.search(corpo.decode("utf-8", "replace")):
+            return {"status": "success", "data": [], "paging": {"total": 0}}
+        raise ErroVhsys(f"{metodo} {caminho}: HTTP {e.code} {corpo!r}") from e
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
         raise ErroVhsys(f"{metodo} {caminho}: {e}") from e
 
@@ -203,8 +211,8 @@ def receitas_do_cliente(id_cliente):
 
 
 def listar_clientes():
-    """Todos os clientes (a API não filtra por telefone nem por documento)."""
-    return _todas({}, "/clientes")
+    """Clientes fora da lixeira (a API não filtra por telefone nem por documento)."""
+    return [c for c in _todas({"lixeira": "Nao"}, "/clientes") if c.get("lixeira") != "Sim"]
 
 
 def consultar_cliente(id_cliente):

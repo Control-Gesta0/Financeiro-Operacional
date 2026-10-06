@@ -3,11 +3,13 @@
     python3 -m unittest discover -s tests
 """
 import http.server
+import io
 import json
 import os
 import sys
 import threading
 import unittest
+import urllib.error
 import urllib.parse
 from pathlib import Path
 from unittest import mock
@@ -50,8 +52,11 @@ class VhsysAPartirDe(http.server.BaseHTTPRequestHandler):
         offset, limit = int(q.get("offset", 0)), int(q.get("limit", 250))
         corpo = {"status": "success", "data": dados[offset:offset + limit],
                  "paging": {"total": len(dados)}}
+        status = 200
+        if not corpo["data"]:  # como o VHSYS real: consulta vazia vira 403
+            status, corpo = 403, {"code": 403, "status": "error", "data": "Nenhuma receita encontrada!"}
         dados_json = json.dumps(corpo).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(dados_json)
@@ -80,6 +85,19 @@ class TestFiltros(unittest.TestCase):
 
     def setUp(self):
         VhsysAPartirDe.consultas = []
+
+    def test_consulta_sem_resultado_vira_lista_vazia(self):
+        # caso real (06/10/2026): HTTP 403 "Nenhuma receita encontrada!" derrubava o atendimento
+        self.assertEqual(vhsys_api.buscar_abertas("1.00", "2026-09-05"), [])
+        self.assertEqual(vhsys_api._todas({"valor_receita": "5.00,5.00"}), [])
+
+    def test_403_de_verdade_continua_erro(self):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                "u", 403, "Forbidden", {}, io.BytesIO(b'{"data":"nome_conta muito longo"}'))):
+            with self.assertRaises(vhsys_api.ErroVhsys):
+                vhsys_api.buscar_abertas("1.00", "2026-09-05")
+            with self.assertRaises(vhsys_api.ErroVhsys):
+                vhsys_api.cadastrar_despesa({"nome_conta": "x"})
 
     def test_busca_exata_de_valor_e_vencimento(self):
         achadas = vhsys_api.buscar_abertas("828.00", "2026-09-05")
