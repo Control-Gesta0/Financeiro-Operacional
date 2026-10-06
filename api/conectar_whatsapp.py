@@ -37,6 +37,10 @@ main {{ max-width: 460px; margin: 32px auto; padding: 0 16px; }}
 h1 {{ font-size: 1.25rem; margin: 0 0 8px; }}
 p {{ color: var(--suave); margin: 8px 0; }}
 .ok {{ color: var(--ok); font-weight: 600; }} .erro {{ color: var(--erro); font-weight: 600; }}
+input, button {{ font: inherit; padding: 8px 10px; border-radius: 8px;
+                 border: 1px solid var(--borda); background: var(--fundo); color: var(--texto); }}
+button {{ cursor: pointer; }}
+form {{ display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }}
 img {{ width: 100%; max-width: 300px; background: #fff; padding: 12px; border-radius: 8px; }}
 ol {{ text-align: left; color: var(--suave); padding-left: 20px; }}
 </style></head>
@@ -71,7 +75,7 @@ def conteudo(st, qrcode):
             f"<p>A página se atualiza em {ATUALIZAR_A_CADA} segundos.</p>")
 
 
-def secao_atendimento(recebendo, link_ligar, erro=None):
+def secao_atendimento(recebendo, link_ligar, erro=None, chave="", aviso=None):
     """Estado do atendimento automático e o botão que cadastra o webhook na Zaptos."""
     modo = atendimento.modo()
     explica = {"desligado": "desligado (o robô não responde ninguém)",
@@ -89,6 +93,13 @@ def secao_atendimento(recebendo, link_ligar, erro=None):
     else:
         partes.append("<p>Recebimento de mensagens desligado. "
                       f'<a href="{html.escape(link_ligar)}">Ligar recebimento</a></p>')
+    partes.append("<p>Devolver uma conversa pausada ao robô (a equipe já terminou o "
+                  "atendimento):</p>"
+                  f'<form method="get"><input type="hidden" name="chave" value="{html.escape(chave)}">'
+                  '<input name="retomar" placeholder="(11) 98765-4321" inputmode="tel" required>'
+                  "<button>Devolver ao robô</button></form>")
+    if aviso:
+        partes.append(f'<p class="ok">{html.escape(aviso)}</p>')
     return "".join(partes)
 
 
@@ -127,8 +138,8 @@ class handler(BaseHTTPRequestHandler):
         if conectado:
             host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
             url_webhook = f"https://{host}/api/webhooks/zaptos?chave={token_webhook_whatsapp()}"
-            chave = urllib.parse.quote((params.get("chave") or [""])[0])
-            erro = None
+            chave = (params.get("chave") or [""])[0]
+            erro = aviso = None
             try:
                 if (params.get("webhook") or [""])[0] == "1":
                     whatsapp.configurar_webhook(url_webhook)
@@ -136,7 +147,14 @@ class handler(BaseHTTPRequestHandler):
                                 for h in whatsapp.ver_webhook())
             except whatsapp.ErroWhatsapp as e:
                 recebendo, erro = False, f"Não consegui configurar o recebimento: {e}"
-            extra = secao_atendimento(recebendo, f"?chave={chave}&webhook=1", erro)
+            if (params.get("retomar") or [""])[0]:
+                try:
+                    devolvido = atendimento.devolver_ao_robo(params["retomar"][0])
+                    aviso = f"Conversa com {devolvido} devolvida ao robô."
+                except (ValueError, whatsapp.ErroWhatsapp) as e:
+                    erro = f"Não consegui devolver a conversa: {e}"
+            extra = secao_atendimento(recebendo, f"?chave={urllib.parse.quote(chave)}&webhook=1",
+                                      erro, chave, aviso)
         print(json.dumps({"conectar_whatsapp": "conectado" if conectado else "aguardando_qr"}))
         self._pagina(200, conteudo(st, None if conectado else qrcode) + extra,
                      atualizar=not conectado)

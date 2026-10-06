@@ -295,6 +295,16 @@ def pausar(chatid, agora):
     whatsapp.editar_chat(chatid, {"chatbot_disableUntil": int((agora + PAUSA_HUMANO).timestamp())})
 
 
+def devolver_ao_robo(numero):
+    """Tira a pausa de uma conversa (a equipe terminou o atendimento antes das 12 h)."""
+    n = whatsapp.normalizar(numero)
+    if not n or n.endswith("@g.us"):
+        raise ValueError("número inválido: use DDD + número, ex.: (11) 98765-4321")
+    n = whatsapp.destino_verificado(n) or n
+    whatsapp.editar_chat(f"{n}@s.whatsapp.net", {"chatbot_disableUntil": 0})
+    return whatsapp.mascarar(n)
+
+
 def _resultado(acao, **extra):
     return {"acao": acao, **extra}
 

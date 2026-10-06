@@ -46,6 +46,13 @@ class Zaptos(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         Zaptos.chamadas.append(("POST", self.path, self.headers["token"]))
+        if self.path == "/chat/check":
+            corpo = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            return self._json([{"query": n, "isInWhatsapp": True, "jid": f"{n}@s.whatsapp.net"}
+                               for n in corpo["numbers"]])
+        if self.path == "/chat/editLead":
+            Zaptos.ultimo_corpo = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            return self._json({"ok": True})
         if self.path == "/webhook":
             corpo = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             Zaptos.webhooks = [{**corpo, "id": "wh1"}]
@@ -122,6 +129,17 @@ class TestConectarWhatsapp(unittest.TestCase):
                          [("GET", "/instance/status"), ("GET", "/webhook")])
         self.assertIn("Recebimento de mensagens desligado", pagina)
         self.assertIn('href="?chave=cron&amp;webhook=1"', pagina)
+
+    def test_devolver_conversa_ao_robo(self):
+        Zaptos.estado = "connected"
+        status, pagina = self.get("?chave=cron&retomar=%2855%29+11+98888-7777")
+        edicao = [c for c in Zaptos.chamadas if c[1] == "/chat/editLead"]
+        self.assertEqual(len(edicao), 1)
+        self.assertEqual(Zaptos.ultimo_corpo, {"id": "5511988887777@s.whatsapp.net",
+                                               "chatbot_disableUntil": 0})
+        self.assertIn("Conversa com 5511*****7777 devolvida ao robô.", pagina)
+        status, pagina = self.get("?chave=cron&retomar=123")
+        self.assertIn("Não consegui devolver a conversa", pagina)
 
     def test_ligar_recebimento_cadastra_o_webhook_com_a_chave_derivada(self):
         from autorizacao import token_webhook_whatsapp
