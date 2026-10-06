@@ -226,11 +226,12 @@ class TestLembretes(unittest.TestCase):
 
 
 class Falso(http.server.BaseHTTPRequestHandler):
-    recebidos, status = [], 200
+    recebidos, user_agents, status = [], [], 200
 
     def do_POST(self):
         n = int(self.headers["Content-Length"])
         Falso.recebidos.append((self.path, self.headers["token"], json.loads(self.rfile.read(n))))
+        Falso.user_agents.append(self.headers["User-Agent"])
         self.send_response(Falso.status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -252,7 +253,7 @@ class TestTransporte(unittest.TestCase):
         cls.srv.shutdown()
 
     def setUp(self):
-        Falso.recebidos, Falso.status = [], 200
+        Falso.recebidos, Falso.user_agents, Falso.status = [], [], 200
         self.env = mock.patch.dict(os.environ, {
             "ZAPTOS_URL": f"{self.base}/whatsapp/", "ZAPTOS_TOKEN": "tok-zaptos",
             "UAZAPI_URL": "http://nao-usar", "UAZAPI_TOKEN": "antigo",
@@ -270,6 +271,12 @@ class TestTransporte(unittest.TestCase):
                                         {"number": "5511988887777", "text": "oi"}))
         self.assertEqual((c2, b2["type"], b2["file"], b2["docName"]),
                          ("/whatsapp/send/media", "document", "https://x/b.pdf", "boleto-1.pdf"))
+
+    def test_user_agent_proprio_para_passar_pelo_cloudflare(self):
+        # caso real (06/10/2026): Python-urllib/3.x levava HTTP 403 "error code: 1010"
+        whatsapp.enviar_texto("5511988887777", "oi")
+        self.assertEqual(Falso.user_agents, [whatsapp.USER_AGENT])
+        self.assertNotIn("Python-urllib", whatsapp.USER_AGENT)
 
     def test_nomes_antigos_ainda_valem(self):
         os.environ.pop("ZAPTOS_URL")
