@@ -39,12 +39,25 @@ class handler(BaseHTTPRequestHandler):
             dt.date.fromisoformat(data)
         except ValueError:
             return self._responder(400, {"erro": "data deve ser AAAA-MM-DD"})
+        enviar = (params.get("enviar") or ["1"])[0] != "0"
+        configurado = os.environ.get("CONCILIACAO_WHATSAPP", "")
+        destino = whatsapp.normalizar(configurado)
+        if enviar and not destino:
+            return self._responder(400, {"erro": "CONCILIACAO_WHATSAPP inválido na Vercel: use 55 + "
+                                                 "DDD + número, ex.: 5511987654321"})
+        envio = {}
         try:
             relatorio = conciliar.montar(data, vhsys_api, asaas_api)
             mensagem = conciliar.texto(relatorio)
             enviado = False
-            if (params.get("enviar") or ["1"])[0] != "0":
-                whatsapp.enviar_texto(os.environ.get("CONCILIACAO_WHATSAPP", ""), mensagem)
+            if enviar:
+                numero = whatsapp.destino_verificado(destino)
+                if not numero:
+                    return self._responder(400, {"erro": f"o número {whatsapp.mascarar(destino)} "
+                                                         "(CONCILIACAO_WHATSAPP) não tem WhatsApp",
+                                                 "texto": mensagem})
+                envio = {"destino": whatsapp.mascarar(numero),
+                         **whatsapp.resumo_envio(whatsapp.enviar_texto(numero, mensagem))}
                 enviado = True
         except (vhsys_api.ErroVhsys, asaas_api.ErroAsaas, whatsapp.ErroWhatsapp) as e:
             print(json.dumps({"conciliacao": data, "resultado": "erro", "motivo": str(e)},
@@ -55,6 +68,7 @@ class handler(BaseHTTPRequestHandler):
             print(json.dumps({"conciliacao": data, "resultado": "erro_inesperado", "motivo": motivo},
                              ensure_ascii=False))
             return self._responder(500, {"erro": motivo})
-        print(json.dumps({"conciliacao": data, "enviado": enviado,
+        print(json.dumps({"conciliacao": data, "enviado": enviado, "whatsapp": envio,
                           "recebimentos": len(relatorio["recebimentos"])}, ensure_ascii=False))
-        self._responder(200, {"enviado": enviado, "texto": mensagem, "relatorio": relatorio})
+        self._responder(200, {"enviado": enviado, "whatsapp": envio, "texto": mensagem,
+                              "relatorio": relatorio})

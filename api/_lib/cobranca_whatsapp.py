@@ -76,10 +76,8 @@ def primeiro_dia_util(data):
 
 def telefone(cliente):
     """Celular do cadastro com DDI 55, ou None se não parecer um número válido."""
-    numero = re.sub(r"\D", "", str((cliente or {}).get("celular_cliente") or "")).lstrip("0")
-    if len(numero) in (10, 11):
-        numero = "55" + numero
-    return numero if numero.startswith("55") and len(numero) in (12, 13) else None
+    numero = whatsapp.normalizar((cliente or {}).get("celular_cliente"))
+    return None if not numero or numero.endswith("@g.us") else numero
 
 
 def nome_cliente(cliente, receita):
@@ -205,10 +203,14 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False):
     if not numero:
         return {**base, "resultado": "sem_whatsapp",
                 "motivo": "cliente sem celular válido no cadastro do ERP Lite"}
-    base["numero"] = numero[:-4] + "****"
+    base["numero"] = whatsapp.mascarar(numero)
     texto = textos(etapa, nome_cliente(cliente, receita), receita)
     if not aplicar:
         return {**base, "resultado": "seria_enviado", "texto": texto}
+    numero = whatsapp.destino_verificado(numero)
+    if not numero:
+        return {**base, "resultado": "sem_whatsapp",
+                "motivo": "o celular do cadastro não tem WhatsApp"}
     pagamento = dados_pagamento(cobranca, asaas)
     enviados, falhas = enviar(numero, etapa, texto, receita, cobranca, pagamento)
     base.update(resultado="enviado", mensagens=enviados)
