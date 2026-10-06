@@ -197,6 +197,11 @@ def receitas_modificadas_desde(data):
     return _todas({"liquidado": "Nao", "lixeira": "Nao", "data_modificacao": data})
 
 
+def receitas_do_cliente(id_cliente):
+    """Todas as receitas do cliente fora da lixeira, abertas e liquidadas."""
+    return _todas({"id_cliente": id_cliente, "lixeira": "Nao"})
+
+
 def consultar_cliente(id_cliente):
     corpo = _chamar("GET", f"/clientes/{urllib.parse.quote(str(id_cliente))}")
     if not corpo or corpo.get("status") != "success":

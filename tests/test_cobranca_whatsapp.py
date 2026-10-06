@@ -35,7 +35,11 @@ class Vhsys:
         self.clientes = clientes
 
     def receitas_modificadas_desde(self, data):
-        return [dict(r) for r in self.receitas.values()]
+        return [dict(r) for r in self.receitas.values() if r["liquidado_rec"] == "Nao"]
+
+    def receitas_do_cliente(self, id_cliente):
+        self.consultas_cliente = getattr(self, "consultas_cliente", 0) + 1
+        return [dict(r) for r in self.receitas.values() if str(r["id_cliente"]) == id_cliente]
 
     def consultar_receita(self, id_receita):
         return dict(self.receitas[id_receita]) if id_receita in self.receitas else None
@@ -67,8 +71,10 @@ class Asaas:
         return {"payload": f"00020126PIX-{pid}"}
 
 
-def receita(id_=1, venc="2026-10-14", obs=OBS, banco="1320902", liquidado="Nao", cliente=77):
+def receita(id_=1, venc="2026-10-14", obs=OBS, banco="1320902", liquidado="Nao", cliente=77,
+            cad="2026-10-06 09:00:00", ident="0"):
     return {"id_conta_rec": id_, "id_banco": banco, "vencimento_rec": venc, "valor_rec": "350.00",
+            "data_cad_rec": cad, "identificacao": ident,
             "observacoes_rec": obs, "liquidado_rec": liquidado, "id_cliente": cliente,
             "nome_cliente": "CSL DISTRIBUIDORA", "nome_conta": "Mensalidade outubro"}
 
@@ -222,9 +228,48 @@ class TestBoleto(unittest.TestCase):
         self.assertNotIn("WhatsApp", v.receitas[3]["observacoes_rec"])
 
     def test_antecedencia_configuravel(self):
-        v = Vhsys([receita(venc="2026-10-16")], {77: CLIENTE})
+        v = Vhsys([receita(1, venc="2026-10-08"), receita(2, venc="2026-10-16")], {77: CLIENTE})
         with mock.patch.dict(os.environ, {"BOLETO_DIAS_ANTES": "5"}):
             r, _ = rodar(v, Asaas(), aplicar=False)
+        self.assertEqual([x["receita"] for x in r["resultados"]], [1])  # 2ª a 10 dias: espera
+
+    def test_cobranca_unica_vai_na_hora_mesmo_vencendo_longe(self):
+        v = Vhsys([receita(venc="2026-12-20")], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas())
+        self.assertEqual(r["resumo"], {"enviado": 1})
+
+    def test_primeira_parcela_vai_na_hora_e_as_demais_perto_do_vencimento(self):
+        # OS parcelada em 3x criada hoje: mesma identificação, vencimentos longe
+        parcelas = [receita(i, venc=v, ident="OS_158") for i, v in
+                    ((11, "2026-10-30"), (12, "2026-11-30"), (13, "2026-12-30"))]
+        v = Vhsys(parcelas, {77: CLIENTE})
+        r, _ = rodar(v, Asaas())
+        self.assertEqual([x["receita"] for x in r["resultados"]], [11])
+        r, _ = rodar(v, Asaas())
+        self.assertEqual(r["resultados"], [])  # cron seguinte: nada de novo
+        self.assertEqual(v.consultas_cliente, 2)  # uma consulta por cliente por rodada
+        r, _ = rodar(v, Asaas(), hoje=dt.date(2026, 11, 20))
+        self.assertEqual([x["receita"] for x in r["resultados"]], [12])
+
+    def test_entrada_paga_na_hora_nao_antecipa_a_segunda(self):
+        parcelas = [receita(21, venc="2026-10-20"), receita(22, venc="2026-11-20"),
+                    receita(23, venc="2026-12-20")]
+        v = Vhsys(parcelas, {77: CLIENTE})
+        rodar(v, Asaas())  # 1ª vai
+        v.receitas[21]["liquidado_rec"] = "Sim"  # cliente pagou a entrada no mesmo dia
+        r, _ = rodar(v, Asaas())
+        self.assertEqual(r["resultados"], [])
+
+    def test_sem_identificacao_agrupa_pelo_minuto_do_cadastro(self):
+        v = Vhsys([receita(31, venc="2026-11-20", cad="2026-10-06 10:15:02"),
+                   receita(32, venc="2026-12-20", cad="2026-10-06 10:15:40"),
+                   receita(33, venc="2026-12-05", cad="2026-10-06 14:00:00")], {77: CLIENTE})
+        r, _ = rodar(v, Asaas(), aplicar=False)
+        self.assertEqual(sorted(x["receita"] for x in r["resultados"]), [31, 33])
+
+    def test_parcela_antiga_espera_a_janela(self):
+        v = Vhsys([receita(41, venc="2026-11-30", cad="2026-09-20 09:00:00")], {77: CLIENTE})
+        r, _ = rodar(v, Asaas(), aplicar=False)
         self.assertEqual(r["resultados"], [])
 
     def test_fora_do_escopo_nao_aparece(self):
