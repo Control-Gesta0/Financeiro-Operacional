@@ -7,6 +7,7 @@ Documentação: https://docs.zaptos.com.br/
 """
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -57,7 +58,50 @@ def _chamar(metodo, caminho, corpo=None):
 def _post(caminho, corpo):
     if not corpo.get("number"):
         raise ErroWhatsapp("destino do WhatsApp não configurado")
-    return _chamar("POST", caminho, corpo)
+    resposta = _chamar("POST", caminho, corpo)
+    # a Zaptos pode responder 200 e ainda assim não entregar: confere o corpo
+    if isinstance(resposta, dict) and (resposta.get("error") or resposta.get("status") == "failed"):
+        raise ErroWhatsapp(f"WhatsApp {caminho}: {resposta.get('error') or 'envio falhou'}")
+    return resposta
+
+
+def normalizar(numero):
+    """Telefone em só dígitos com DDI 55 (aceita espaços, +, parênteses, traço e o 0 da
+    operadora/DDD), JID de grupo como está, ou None se não parecer um número válido."""
+    texto = str(numero or "").strip()
+    if texto.endswith("@g.us"):
+        return texto
+    digitos = re.sub(r"\D", "", texto).lstrip("0")
+    if len(digitos) in (10, 11):
+        digitos = "55" + digitos
+    return digitos if digitos.startswith("55") and len(digitos) in (12, 13) else None
+
+
+def mascarar(numero):
+    numero = str(numero or "")
+    return numero if numero.endswith("@g.us") else (numero[:4] + "*" * (len(numero) - 8) + numero[-4:])
+
+
+def destino_verificado(numero):
+    """Confere na Zaptos (/chat/check) se o número tem WhatsApp e devolve o número como o
+    WhatsApp o conhece (no Brasil, contas antigas não têm o nono dígito), ou None."""
+    if numero.endswith("@g.us"):
+        return numero
+    resposta = _chamar("POST", "/chat/check", {"numbers": [numero]})
+    item = resposta[0] if isinstance(resposta, list) and resposta else {}
+    if not item.get("isInWhatsapp"):
+        return None
+    jid = str(item.get("jid") or "")
+    return jid.split("@")[0].split(":")[0] if jid else numero
+
+
+def resumo_envio(resposta):
+    """Campos úteis da resposta de um envio (para o relatório e os logs)."""
+    resposta = resposta if isinstance(resposta, dict) else {}
+    return {k: v for k, v in {"status": resposta.get("status"),
+                              "mensagem": resposta.get("messageid") or resposta.get("id"),
+                              "retorno": (resposta.get("response") or {}).get("message")
+                              if isinstance(resposta.get("response"), dict) else None}.items() if v}
 
 
 def status():

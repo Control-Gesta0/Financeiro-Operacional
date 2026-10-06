@@ -262,8 +262,13 @@ class Falso(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers["Content-Length"])
-        Falso.enviados.append((self.path, self.headers["token"], json.loads(self.rfile.read(n))))
-        self._json({"ok": True})
+        corpo = json.loads(self.rfile.read(n))
+        if self.path.endswith("/chat/check"):
+            Falso.checados.append(corpo["numbers"])
+            return self._json([{"query": q, "isInWhatsapp": q != "5511900000000",
+                                "jid": f"{q}@s.whatsapp.net"} for q in corpo["numbers"]])
+        Falso.enviados.append((self.path, self.headers["token"], corpo))
+        self._json({"id": "r1", "messageid": "3EB0", "status": "sent"})
 
     def log_message(self, *a):
         pass
@@ -300,7 +305,7 @@ class TestHandler(unittest.TestCase):
         cls.env.stop()
 
     def setUp(self):
-        Falso.enviados = []
+        Falso.enviados, Falso.checados = [], []
 
     def get(self, query="", auth=None):
         req = urllib.request.Request(
@@ -333,6 +338,30 @@ class TestHandler(unittest.TestCase):
         self.assertEqual((caminho, token, body["number"]), ("/uaz/send/text", "tok",
                                                             "5511999999999"))
         self.assertIn("Conciliação Asaas · 11/10/2026", body["text"])
+        self.assertEqual(Falso.checados, [["5511999999999"]])
+        self.assertEqual(corpo["whatsapp"], {"destino": "5511*****9999", "status": "sent",
+                                             "mensagem": "3EB0"})
+
+    def test_destino_com_espacos_e_mais_e_normalizado(self):
+        with mock.patch.dict(os.environ, {"CONCILIACAO_WHATSAPP": "+55 (11) 99999-9999"}), \
+                mock.patch("sys.stdout"):
+            status, corpo = self.get("?data=2026-10-11", auth="Bearer cron")
+        self.assertEqual((status, Falso.enviados[0][2]["number"]), (200, "5511999999999"))
+
+    def test_destino_invalido_explica_o_formato(self):
+        with mock.patch.dict(os.environ, {"CONCILIACAO_WHATSAPP": "9999-9999"}):
+            status, corpo = self.get("?data=2026-10-11", auth="Bearer cron")
+        self.assertEqual(status, 400)
+        self.assertIn("55 + DDD", corpo["erro"])
+        self.assertEqual(Falso.enviados, [])
+
+    def test_destino_sem_whatsapp_nao_envia(self):
+        with mock.patch.dict(os.environ, {"CONCILIACAO_WHATSAPP": "5511900000000"}), \
+                mock.patch("sys.stdout"):
+            status, corpo = self.get("?data=2026-10-11", auth="Bearer cron")
+        self.assertEqual(status, 400)
+        self.assertIn("5511*****0000", corpo["erro"])
+        self.assertEqual(Falso.enviados, [])
 
     def test_data_invalida(self):
         self.assertEqual(self.get("?data=11/10/2026&chave=cron")[0], 400)

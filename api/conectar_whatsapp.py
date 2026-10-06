@@ -52,6 +52,7 @@ def conteudo(st, qrcode):
     if inst.get("status") == "connected" or (st.get("status") or {}).get("connected"):
         jid = (st.get("status") or {}).get("jid") or {}
         numero = jid.get("user") if isinstance(jid, dict) else str(jid).split("@")[0]
+        numero = str(numero or "").split(":")[0]  # "551199...:5" -> o ":5" é o aparelho
         return ("<h1>WhatsApp conectado</h1>"
                 f'<p class="ok">Conectado como {html.escape(inst.get("profileName") or "")}'
                 f"{' (' + html.escape(numero) + ')' if numero else ''}</p>"

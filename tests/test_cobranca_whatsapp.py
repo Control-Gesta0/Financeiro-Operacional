@@ -80,8 +80,12 @@ CLIENTE = {"id_cliente": 77, "razao_cliente": "CSL DISTRIBUIDORA LTDA",
 class Zaptos:
     """Substitui o transporte: guarda (tipo, número, conteúdo) de cada mensagem."""
 
-    def __init__(self, falhar=()):
+    def __init__(self, falhar=(), sem_whatsapp=(), jid=None):
         self.mensagens, self.falhar = [], set(falhar)
+        self.sem_whatsapp, self.jid = set(sem_whatsapp), jid or {}
+
+    def verificar(self, numero):
+        return None if numero in self.sem_whatsapp else self.jid.get(numero, numero)
 
     def texto(self, numero, texto):
         tipo = "pix" if texto.startswith("00020126") else "texto"
@@ -95,10 +99,11 @@ class Zaptos:
         self.mensagens.append(("pdf", numero, url, nome))
 
 
-def rodar(vhsys, asaas, etapas=("boleto",), aplicar=True, hoje=HOJE, falhar=()):
-    z = Zaptos(falhar)
+def rodar(vhsys, asaas, etapas=("boleto",), aplicar=True, hoje=HOJE, falhar=(), **zaptos):
+    z = Zaptos(falhar, **zaptos)
     with mock.patch.object(whatsapp, "enviar_texto", z.texto), \
             mock.patch.object(whatsapp, "enviar_documento", z.documento), \
+            mock.patch.object(whatsapp, "destino_verificado", z.verificar), \
             mock.patch.dict(os.environ, {"VHSYS_ID_BANCO_ASAAS": "", "LEMBRETE_DIAS_ATRASO": ""}):
         r = cw.cobrar(vhsys, asaas, etapas, aplicar=aplicar, desde=DESDE, hoje=hoje)
     return r, z.mensagens
@@ -107,9 +112,16 @@ def rodar(vhsys, asaas, etapas=("boleto",), aplicar=True, hoje=HOJE, falhar=()):
 class TestTelefone(unittest.TestCase):
     def test_formatos(self):
         casos = {"(11) 98888-7777": "5511988887777", "5511988887777": "5511988887777",
-                 "011 3333-4444": "551133334444", "98888-7777": None, "": None}
+                 "011 3333-4444": "551133334444", "98888-7777": None, "": None,
+                 "+55 (11) 98888-7777": "5511988887777", "123@g.us": None}
         for entrada, esperado in casos.items():
             self.assertEqual(cw.telefone({"celular_cliente": entrada}), esperado, entrada)
+
+    def test_destino_da_conciliacao(self):
+        self.assertEqual(whatsapp.normalizar(" +55 11 98888-7777 "), "5511988887777")
+        self.assertEqual(whatsapp.normalizar("120363000000@g.us"), "120363000000@g.us")
+        self.assertIsNone(whatsapp.normalizar("98888-7777"))
+        self.assertEqual(whatsapp.mascarar("5511988887777"), "5511*****7777")
 
 
 class TestBoleto(unittest.TestCase):
@@ -170,6 +182,18 @@ class TestBoleto(unittest.TestCase):
             r, msgs = rodar(v, Asaas(status=status))
             self.assertEqual((r["resumo"], msgs), ({"nao_enviado": 1}, []), status)
 
+    def test_celular_sem_whatsapp_nao_envia_nem_marca(self):
+        v = Vhsys([receita()], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas(), sem_whatsapp={"5511988887777"})
+        self.assertEqual((r["resumo"], msgs), ({"sem_whatsapp": 1}, []))
+        self.assertNotIn("WhatsApp:", v.receitas[1]["observacoes_rec"])
+
+    def test_envia_para_o_numero_que_o_whatsapp_conhece(self):
+        # conta antiga sem o nono dígito: o /chat/check devolve 551188887777
+        v = Vhsys([receita()], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas(), jid={"5511988887777": "551188887777"})
+        self.assertEqual({m[1] for m in msgs}, {"551188887777"})
+
     def test_cliente_sem_celular(self):
         v = Vhsys([receita()], {77: {**CLIENTE, "celular_cliente": ""}})
         r, msgs = rodar(v, Asaas())
@@ -227,15 +251,24 @@ class TestLembretes(unittest.TestCase):
 
 class Falso(http.server.BaseHTTPRequestHandler):
     recebidos, user_agents, status = [], [], 200
+    resposta = {"id": "r1", "messageid": "3EB0", "status": "sent"}
 
     def do_POST(self):
         n = int(self.headers["Content-Length"])
-        Falso.recebidos.append((self.path, self.headers["token"], json.loads(self.rfile.read(n))))
+        corpo = json.loads(self.rfile.read(n))
+        Falso.recebidos.append((self.path, self.headers["token"], corpo))
         Falso.user_agents.append(self.headers["User-Agent"])
         self.send_response(Falso.status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"error": "invalid"}' if Falso.status >= 400 else b'{"id": "m1"}')
+        if Falso.status >= 400:
+            resposta = {"error": "invalid"}
+        elif self.path.endswith("/chat/check"):
+            resposta = [{"query": q, "isInWhatsapp": q != "5511900000000",
+                         "jid": "551188887777@s.whatsapp.net"} for q in corpo["numbers"]]
+        else:
+            resposta = Falso.resposta
+        self.wfile.write(json.dumps(resposta).encode())
 
     def log_message(self, *a):
         pass
@@ -254,6 +287,7 @@ class TestTransporte(unittest.TestCase):
 
     def setUp(self):
         Falso.recebidos, Falso.user_agents, Falso.status = [], [], 200
+        Falso.resposta = {"id": "r1", "messageid": "3EB0", "status": "sent"}
         self.env = mock.patch.dict(os.environ, {
             "ZAPTOS_URL": f"{self.base}/whatsapp/", "ZAPTOS_TOKEN": "tok-zaptos",
             "UAZAPI_URL": "http://nao-usar", "UAZAPI_TOKEN": "antigo",
@@ -284,6 +318,26 @@ class TestTransporte(unittest.TestCase):
         os.environ["UAZAPI_URL"] = f"{self.base}/uaz"
         whatsapp.enviar_texto("5511988887777", "oi")
         self.assertEqual(Falso.recebidos[0][:2], ("/uaz/send/text", "antigo"))
+
+    def test_verifica_o_numero_e_usa_o_jid_do_whatsapp(self):
+        self.assertEqual(whatsapp.destino_verificado("5511988887777"), "551188887777")
+        self.assertIsNone(whatsapp.destino_verificado("5511900000000"))
+        self.assertEqual(Falso.recebidos[0][:1] + (Falso.recebidos[0][2],),
+                         ("/whatsapp/chat/check", {"numbers": ["5511988887777"]}))
+        self.assertEqual(whatsapp.destino_verificado("123@g.us"), "123@g.us")
+        self.assertEqual(len(Falso.recebidos), 2)  # grupo não passa pelo check
+
+    def test_resposta_200_com_falha_vira_erro(self):
+        Falso.resposta = {"status": "failed"}
+        with self.assertRaises(whatsapp.ErroWhatsapp):
+            whatsapp.enviar_texto("5511988887777", "oi")
+        Falso.resposta = {"error": "number not on whatsapp"}
+        with self.assertRaises(whatsapp.ErroWhatsapp):
+            whatsapp.enviar_texto("5511988887777", "oi")
+
+    def test_resumo_do_envio(self):
+        r = whatsapp.enviar_texto("5511988887777", "oi")
+        self.assertEqual(whatsapp.resumo_envio(r), {"status": "sent", "mensagem": "3EB0"})
 
     def test_erro_guarda_o_status(self):
         Falso.status = 400
