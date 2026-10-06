@@ -124,6 +124,16 @@ class TestTelefone(unittest.TestCase):
         self.assertEqual(whatsapp.mascarar("5511988887777"), "5511*****7777")
 
 
+class TestNome(unittest.TestCase):
+    def test_nome_em_maiusculas_fica_legivel(self):
+        casos = {"EDUARDO DO VALE": "Eduardo do Vale",
+                 "PEDRAZZOLI & PEDRAZZOLI LTDA": "Pedrazzoli & Pedrazzoli LTDA",
+                 "MARIA DAS DORES E SILVA": "Maria das Dores e Silva",
+                 "Já Escrito Normal": "Já Escrito Normal"}
+        for entrada, esperado in casos.items():
+            self.assertEqual(cw.nome_cliente({"razao_cliente": entrada}, {}), esperado)
+
+
 class TestBoleto(unittest.TestCase):
     def test_previa_nao_envia_nem_marca(self):
         v = Vhsys([receita()], {77: CLIENTE})
@@ -138,7 +148,7 @@ class TestBoleto(unittest.TestCase):
         self.assertEqual([m[0] for m in msgs], ["texto", "pdf", "pix"])
         self.assertEqual({m[1] for m in msgs}, {"5511988887777"})
         texto = msgs[0][2]
-        self.assertIn("Olá, Csl Distribuidora Ltda!", texto)
+        self.assertIn("Olá, Csl Distribuidora LTDA!", texto)
         self.assertIn("R$ 350,00", texto)
         self.assertIn("Linha digitável:\n4619111", texto)
         self.assertIn("https://www.asaas.com/i/pay_abc", texto)

@@ -83,7 +83,19 @@ def telefone(cliente):
 def nome_cliente(cliente, receita):
     nome = ((cliente or {}).get("fantasia_cliente") or (cliente or {}).get("razao_cliente")
             or receita.get("nome_cliente") or "").strip()
-    return nome.title() if nome.isupper() else nome
+    if not nome.isupper():
+        return nome
+    # "EDUARDO DO VALE" -> "Eduardo do Vale"; siglas como LTDA/ME/EPP ficam maiúsculas
+    minusculas, siglas = {"de", "da", "do", "das", "dos", "e"}, {"LTDA", "ME", "EPP", "EIRELI", "SA", "S/A"}
+    palavras = []
+    for i, palavra in enumerate(nome.split()):
+        if palavra in siglas:
+            palavras.append(palavra)
+        elif i and palavra.lower() in minusculas:
+            palavras.append(palavra.lower())
+        else:
+            palavras.append(palavra.capitalize())
+    return " ".join(palavras)
 
 
 def id_cobranca(receita):
