@@ -205,6 +205,11 @@ def receitas_modificadas_desde(data):
     return _todas({"liquidado": "Nao", "lixeira": "Nao", "data_modificacao": data})
 
 
+def receitas_em_aberto():
+    """Todas as receitas não liquidadas fora da lixeira."""
+    return _todas({"liquidado": "Nao", "lixeira": "Nao"})
+
+
 def receitas_do_cliente(id_cliente):
     """Todas as receitas do cliente fora da lixeira, abertas e liquidadas."""
     return _todas({"id_cliente": id_cliente, "lixeira": "Nao"})
