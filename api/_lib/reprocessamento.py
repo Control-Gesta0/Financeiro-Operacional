@@ -11,6 +11,25 @@ import baixa
 import conciliar
 
 
+def reprocessar_cobranca(pid, vhsys, asaas, aplicar=False):
+    """Baixa de uma cobrança só (ex.: boleto antigo pago no Asaas e ainda em aberto no ERP).
+
+    Passa pela mesma regra do webhook; só vale para cobrança já recebida no Asaas."""
+    cobranca = asaas.consultar_cobranca(pid)
+    if not cobranca or cobranca.get("deleted"):
+        resultado = {"cobranca": pid, "resultado": "nao_conciliado",
+                     "motivo": "cobrança não encontrada no Asaas"}
+    elif cobranca.get("status") != "RECEIVED":
+        resultado = {"cobranca": pid, "resultado": "nao_conciliado",
+                     "motivo": f"cobrança não está recebida no Asaas ({cobranca.get('status')})"}
+    else:
+        resultado = baixa.processar_evento({"event": "PAYMENT_RECEIVED", "payment": cobranca},
+                                           vhsys, asaas,
+                                           modo_forcado=None if aplicar else "simulacao")
+    return {"cobranca": pid, "aplicado": aplicar,
+            "resumo": {resultado["resultado"]: 1}, "resultados": [resultado]}
+
+
 def reprocessar(data, vhsys, asaas, aplicar=False):
     extrato, antecipadas = conciliar.separar_antecipadas(asaas.listar_extrato(data))
     resultados = []
