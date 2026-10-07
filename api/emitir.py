@@ -3,7 +3,7 @@
 Chamado pelo cron da Vercel a cada 15 minutos (vercel.json). Só grava quando
 EMISSAO_MODO=ativo; antes disso, e em qualquer chamada manual sem aplicar=1, é prévia.
 
-Depois de emitir, manda o boleto ao cliente pelo WhatsApp (etapa "boleto" de
+Depois de emitir, manda o boleto ao cliente pelo WhatsApp e pelo e-mail (etapa "boleto" de
 cobranca_whatsapp: na hora para a cobrança única e a 1ª parcela; as demais parcelas
 10 dias antes do vencimento), só com
 WHATSAPP_COBRANCA_MODO=ativo e, no cron, em horário comercial.
@@ -72,15 +72,18 @@ class handler(BaseHTTPRequestHandler):
             print(json.dumps({"emissao": "erro_inesperado", "motivo": motivo}, ensure_ascii=False))
             return self._responder(500, {"erro": motivo})
         if not diagnostico:
-            resultado["whatsapp"] = self._whatsapp(pediu_aplicar, do_cron, desde)
+            for canal in cobranca_whatsapp.canais_configurados():
+                resultado[canal] = self._envio(canal, pediu_aplicar, do_cron, desde)
         print(json.dumps({"emissao": resultado["resumo"], "aplicado": aplicar,
-                          "whatsapp": resultado.get("whatsapp", {}).get("resumo")},
+                          **{c: resultado.get(c, {}).get("resumo")
+                             for c in cobranca_whatsapp.CANAIS if c in resultado}},
                          ensure_ascii=False))
         self._responder(200, resultado)
 
-    def _whatsapp(self, pediu_aplicar, do_cron, desde):
-        """Envio do boleto ao cliente; um erro aqui não desfaz nem esconde a emissão."""
-        enviar = cobranca_whatsapp.modo() == "ativo" and (pediu_aplicar or do_cron)
+    def _envio(self, canal, pediu_aplicar, do_cron, desde):
+        """Envio do boleto ao cliente por um canal (whatsapp/email); um erro aqui não desfaz
+        nem esconde a emissão."""
+        enviar = cobranca_whatsapp.modo(canal) == "ativo" and (pediu_aplicar or do_cron)
         if do_cron and not enviar:
             return {"modo": "simulacao"}  # no cron, sem envio ligado, nem consulta
         if enviar and not cobranca_whatsapp.em_horario_comercial():
@@ -88,8 +91,8 @@ class handler(BaseHTTPRequestHandler):
                               f"{cobranca_whatsapp.ENVIO_DAS}h"}
         try:
             return cobranca_whatsapp.cobrar(vhsys_api, asaas_api, ("boleto",), aplicar=enviar,
-                                            desde=None if enviar else desde)
+                                            desde=None if enviar else desde, canal=canal)
         except Exception as e:  # registra e segue: a emissão já foi feita
             motivo = f"{type(e).__name__}: {e}"
-            print(json.dumps({"whatsapp": "erro", "motivo": motivo}, ensure_ascii=False))
+            print(json.dumps({canal: "erro", "motivo": motivo}, ensure_ascii=False))
             return {"erro": motivo}

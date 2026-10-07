@@ -317,6 +317,65 @@ class TestBoleto(unittest.TestCase):
 OBS_ANTIGA = "Cobranca em aberto no Asaas (pay_velho1). Cobrança de P 1402"
 
 
+class TestEmail(unittest.TestCase):
+    """Canal e-mail (08/10/2026): mesma régua, marca própria, PDF anexado."""
+
+    def rodar_email(self, v, asaas=None, falhar=False, **kw):
+        enviados = []
+
+        def enviar(destinos, assunto, texto, anexos=()):
+            if falhar:
+                raise cw.correio.ErroEmail("SMTP fora")
+            enviados.append((destinos, assunto, texto, [n for n, _ in anexos]))
+            return []
+        with mock.patch.object(cw.correio, "enviar", enviar), \
+                mock.patch.object(cw.correio, "baixar_pdf", lambda url: b"%PDF-1.4"), \
+                mock.patch.dict(os.environ, {"VHSYS_ID_BANCO_ASAAS": "", "LEMBRETE_DIAS_ATRASO": ""}):
+            r = cw.cobrar(v, asaas or Asaas(), kw.pop("etapas", ("boleto",)), aplicar=True,
+                          hoje=kw.pop("hoje", HOJE), canal="email")
+        return r, enviados
+
+    def test_boleto_por_email_com_pdf_e_marca_propria(self):
+        cliente = dict(CLIENTE, email_cliente="Fin@CSL.com.br; compras@csl.com.br")
+        obs = OBS + "\nWhatsApp: boleto enviado em 06/10/2026 (texto, pdf)."  # WhatsApp já foi
+        v = Vhsys([receita(obs=obs)], {77: cliente})
+        r, enviados = self.rodar_email(v)
+        ((destinos, assunto, texto, anexos),) = enviados
+        self.assertEqual(destinos, ["fin@csl.com.br", "compras@csl.com.br"])
+        self.assertEqual(assunto, "Boleto Mensalidade outubro: vencimento 14/10/2026")
+        self.assertIn("Olá, Csl Distribuidora LTDA!", texto)
+        self.assertIn("Linha digitável:", texto)
+        self.assertEqual(anexos, ["boleto-928695642.pdf"])
+        self.assertEqual(r["resultados"][0]["email"], "fi***@csl.com.br, co***@csl.com.br")
+        self.assertIn("E-mail: boleto enviado em 06/10/2026 (email, pdf).",
+                      v.receitas[1]["observacoes_rec"])
+        r, enviados = self.rodar_email(v)  # rodar de novo não reenvia
+        self.assertEqual((r["resultados"], enviados), ([], []))
+
+    def test_sem_email_no_cadastro(self):
+        v = Vhsys([receita()], {77: dict(CLIENTE, email_cliente="")})
+        r, enviados = self.rodar_email(v)
+        self.assertEqual((r["resumo"], enviados), ({"sem_email": 1}, []))
+
+    def test_falha_no_smtp_nao_marca(self):
+        v = Vhsys([receita()], {77: dict(CLIENTE, email_cliente="fin@csl.com.br")})
+        r, _ = self.rodar_email(v, falhar=True)
+        self.assertEqual(r["resumo"], {"erro": 1})
+        self.assertNotIn("E-mail:", v.receitas[1]["observacoes_rec"])
+
+    def test_lembrete_por_email_independe_do_whatsapp(self):
+        obs = OBS + "\nWhatsApp: lembrete de vencimento enviado em 06/10/2026 (texto, pdf)."
+        v = Vhsys([receita(venc="2026-10-06", obs=obs)], {77: dict(CLIENTE, email_cliente="a@b.com")})
+        r, enviados = self.rodar_email(v, etapas=("vencimento", "atraso"))
+        self.assertEqual(enviados[0][1], "Lembrete: seu boleto vence hoje (06/10/2026)")
+
+    def test_canais_configurados(self):
+        with mock.patch.dict(os.environ, {"SMTP_HOST": "", "SMTP_USUARIO": "", "SMTP_SENHA": ""}):
+            self.assertEqual(cw.canais_configurados(), ["whatsapp"])
+        with mock.patch.dict(os.environ, {"SMTP_HOST": "h", "SMTP_USUARIO": "u", "SMTP_SENHA": "s"}):
+            self.assertEqual(cw.canais_configurados(), ["whatsapp", "email"])
+
+
 class TestBoletosAntigos(unittest.TestCase):
     """Boletos que o ERP anterior ligou ao Asaas (incluídos em 07/10/2026)."""
 
