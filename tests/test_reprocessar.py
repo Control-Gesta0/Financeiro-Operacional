@@ -140,6 +140,27 @@ class TestReprocessar(unittest.TestCase):
         self.assertEqual((len(v.liquidadas), len(v.despesas)), (1, 1))
         self.assertEqual(r["resumo"], {"ja_liquidada": 2})
 
+    def test_uma_cobranca_recebida(self):
+        v, a = cenario()
+        a.cobrancas["pay_jn"]["status"] = "RECEIVED"
+        with mock.patch.dict(os.environ, {"BAIXA_MODO": "ativo"}):
+            previa = reprocessamento.reprocessar_cobranca("pay_jn", v, a, aplicar=False)
+            self.assertEqual(v.liquidadas, [])
+            r = reprocessamento.reprocessar_cobranca("pay_jn", v, a, aplicar=True)
+        self.assertEqual(previa["resumo"], {"liquidada": 1})
+        self.assertEqual(r["resumo"], {"liquidada": 1})
+        self.assertEqual([i for i, _ in v.liquidadas], [140738277])
+
+    def test_uma_cobranca_nao_recebida_nao_baixa(self):
+        v, a = cenario()
+        a.cobrancas["pay_jn"]["status"] = "PENDING"
+        with mock.patch.dict(os.environ, {"BAIXA_MODO": "ativo"}):
+            r = reprocessamento.reprocessar_cobranca("pay_jn", v, a, aplicar=True)
+            sumida = reprocessamento.reprocessar_cobranca("pay_x", v, a, aplicar=True)
+        self.assertEqual(r["resumo"], {"nao_conciliado": 1})
+        self.assertEqual(sumida["resumo"], {"nao_conciliado": 1})
+        self.assertEqual(v.liquidadas, [])
+
 
 class TestRota(unittest.TestCase):
     @classmethod
@@ -170,6 +191,9 @@ class TestRota(unittest.TestCase):
 
     def test_sem_data(self):
         self.assertEqual(self.get("?chave=cron")[0], 400)
+
+    def test_cobranca_invalida(self):
+        self.assertEqual(self.get("?cobranca=abc&chave=cron")[0], 400)
 
     def test_aplicar_com_baixa_em_simulacao_e_recusado(self):
         status, corpo = self.get(f"?data={DIA}&aplicar=1&chave=cron")
