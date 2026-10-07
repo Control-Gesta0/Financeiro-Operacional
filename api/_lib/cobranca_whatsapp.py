@@ -33,6 +33,7 @@ empresa (correio.py). Cada canal tem a sua marca ("WhatsApp: ..." / "E-mail: ...
 então um não bloqueia o outro. Só envia com EMAIL_COBRANCA_MODO=ativo.
 """
 import datetime as dt
+import html
 import os
 import re
 from collections import Counter
@@ -121,6 +122,8 @@ def telefone(cliente):
 def nome_cliente(cliente, receita):
     nome = ((cliente or {}).get("fantasia_cliente") or (cliente or {}).get("razao_cliente")
             or receita.get("nome_cliente") or "").strip()
+    while "&" in nome and html.unescape(nome) != nome:  # "&amp;amp;" do cadastro -> "&"
+        nome = html.unescape(nome)
     if not nome.isupper():
         return nome
     # "EDUARDO DO VALE" -> "Eduardo do Vale"; siglas como LTDA/ME/EPP ficam maiúsculas

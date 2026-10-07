@@ -136,7 +136,8 @@ class TestNome(unittest.TestCase):
         casos = {"EDUARDO DO VALE": "Eduardo do Vale",
                  "PEDRAZZOLI & PEDRAZZOLI LTDA": "Pedrazzoli & Pedrazzoli LTDA",
                  "MARIA DAS DORES E SILVA": "Maria das Dores e Silva",
-                 "Já Escrito Normal": "Já Escrito Normal"}
+                 "Já Escrito Normal": "Já Escrito Normal",
+                 "LION COMERCIO &amp;amp; SERVICOS LTDA": "Lion Comercio & Servicos LTDA"}
         for entrada, esperado in casos.items():
             self.assertEqual(cw.nome_cliente({"razao_cliente": entrada}, {}), esperado)
 
