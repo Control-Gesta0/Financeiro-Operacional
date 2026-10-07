@@ -54,11 +54,12 @@ class Vhsys:
 class Asaas:
     ErroAsaas = ErroAsaasFalso
 
-    def __init__(self, status="PENDING", sem_pix=False):
-        self.status, self.sem_pix = status, sem_pix
+    def __init__(self, status="PENDING", sem_pix=False, excluida=False):
+        self.status, self.sem_pix, self.excluida = status, sem_pix, excluida
 
     def consultar_cobranca(self, pid):
-        return {"id": pid, "status": self.status, "value": 350.0, "invoiceNumber": "928695642",
+        return {"id": pid, "status": self.status, "deleted": self.excluida, "value": 350.0,
+                "invoiceNumber": "928695642",
                 "bankSlipUrl": f"https://www.asaas.com/b/pdf/{pid}",
                 "invoiceUrl": f"https://www.asaas.com/i/{pid}"}
 
@@ -208,6 +209,13 @@ class TestBoleto(unittest.TestCase):
         v = Vhsys([receita()], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(), jid={"5511988887777": "551188887777"})
         self.assertEqual({m[1] for m in msgs}, {"551188887777"})
+
+    def test_cobranca_excluida_no_asaas_nao_envia(self):
+        # paga por fora (Pix no C6) e excluída no Asaas: o status continua PENDING
+        v = Vhsys([receita()], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas(excluida=True))
+        self.assertEqual((r["resumo"], msgs), ({"nao_enviado": 1}, []))
+        self.assertEqual(r["resultados"][0]["motivo"], "cobrança excluída no Asaas")
 
     def test_cliente_sem_celular(self):
         v = Vhsys([receita()], {77: {**CLIENTE, "celular_cliente": ""}})
