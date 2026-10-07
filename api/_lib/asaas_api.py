@@ -104,6 +104,18 @@ def listar_clientes():
             return clientes
 
 
+def cobrancas_do_cliente(id_cliente):
+    """Todas as cobranças (não excluídas) de um cliente do Asaas."""
+    cobrancas, offset = [], 0
+    while True:
+        corpo = _get("/payments", {"customer": id_cliente, "offset": offset, "limit": 100}) or {}
+        pagina = corpo.get("data") or []
+        cobrancas.extend(c for c in pagina if not c.get("deleted"))
+        offset += len(pagina)
+        if not pagina or not corpo.get("hasMore"):
+            return cobrancas
+
+
 def criar_cliente(dados):
     return _enviar("POST", "/customers", dados)
 

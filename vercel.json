@@ -1,7 +1,8 @@
 {
   "functions": {
     "api/webhooks/zaptos.py": { "maxDuration": 60 },
-    "api/desligar_avisos_asaas.py": { "maxDuration": 60 }
+    "api/desligar_avisos_asaas.py": { "maxDuration": 60 },
+    "api/vincular_asaas.py": { "maxDuration": 60 }
   },
   "crons": [
     { "path": "/api/conciliacao", "schedule": "0 10 * * *" },
