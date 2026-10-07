@@ -26,6 +26,11 @@ Regras combinadas com o financeiro (05/10/2026):
 Antes de cada envio a cobrança é consultada no Asaas: só segue se estiver PENDING ou
 OVERDUE. Cada envio deixa uma marca nas observações da receita, então rodar de novo
 nunca manda a mesma etapa duas vezes. Só grava/envia com WHATSAPP_COBRANCA_MODO=ativo.
+
+Canal e-mail (08/10/2026): a mesma régua e o mesmo texto vão também para o e-mail do
+cadastro do ERP (vários separados por ";"), com o PDF do boleto anexado, pelo SMTP da
+empresa (correio.py). Cada canal tem a sua marca ("WhatsApp: ..." / "E-mail: ..."),
+então um não bloqueia o outro. Só envia com EMAIL_COBRANCA_MODO=ativo.
 """
 import datetime as dt
 import os
@@ -33,22 +38,35 @@ import re
 from collections import Counter
 from decimal import Decimal
 
+import correio
 import emissao
 import whatsapp
 
 BRT = dt.timezone(dt.timedelta(hours=-3))
 ENVIO_DAS, ENVIO_ATE = 8, 20  # janela do envio automático do boleto (horas, Brasília)
 ETAPAS = ("boleto", "vencimento", "atraso")
-MARCAS = {"boleto": "WhatsApp: boleto enviado",
-          "vencimento": "WhatsApp: lembrete de vencimento enviado",
-          "atraso": "WhatsApp: aviso de atraso enviado"}
+CANAIS = ("whatsapp", "email")
+MARCAS_CANAL = {
+    "whatsapp": {"boleto": "WhatsApp: boleto enviado",
+                 "vencimento": "WhatsApp: lembrete de vencimento enviado",
+                 "atraso": "WhatsApp: aviso de atraso enviado"},
+    "email": {"boleto": "E-mail: boleto enviado",
+              "vencimento": "E-mail: lembrete de vencimento enviado",
+              "atraso": "E-mail: aviso de atraso enviado"},
+}
+MARCAS = MARCAS_CANAL["whatsapp"]
 STATUS_A_COBRAR = ("PENDING", "OVERDUE")
 COBRANCA_DA_RECEITA = re.compile(re.escape(emissao.MARCA_EMISSAO) + r" (pay_[A-Za-z0-9]+)")
 
 
-def modo():
-    return "ativo" if os.environ.get("WHATSAPP_COBRANCA_MODO", "").strip().lower() == "ativo" \
-        else "simulacao"
+def modo(canal="whatsapp"):
+    variavel = "EMAIL_COBRANCA_MODO" if canal == "email" else "WHATSAPP_COBRANCA_MODO"
+    return "ativo" if os.environ.get(variavel, "").strip().lower() == "ativo" else "simulacao"
+
+
+def canais_configurados():
+    """WhatsApp sempre; e-mail quando o SMTP estiver configurado na Vercel."""
+    return [c for c in CANAIS if c == "whatsapp" or correio.configurado()]
 
 
 def agora():
@@ -133,9 +151,9 @@ def da_integracao(receita):
     return bool(COBRANCA_DA_RECEITA.search(receita.get("observacoes_rec") or ""))
 
 
-def marca_enviada(receita, etapa):
-    """Data (dd/mm/aaaa) em que a etapa já foi enviada, ou None."""
-    m = re.search(re.escape(MARCAS[etapa]) + r" em (\d{2}/\d{2}/\d{4})",
+def marca_enviada(receita, etapa, canal="whatsapp"):
+    """Data (dd/mm/aaaa) em que a etapa já foi enviada por esse canal, ou None."""
+    m = re.search(re.escape(MARCAS_CANAL[canal][etapa]) + r" em (\d{2}/\d{2}/\d{4})",
                   receita.get("observacoes_rec") or "")
     return m.group(1) if m else None
 
@@ -184,8 +202,8 @@ def resumo_das_parcelas(parcelas):
     return "\n".join(linhas)
 
 
-def boleto_cabe_hoje(receita, hoje, vhsys, cache):
-    if marca_enviada(receita, "boleto"):
+def boleto_cabe_hoje(receita, hoje, vhsys, cache, canal="whatsapp"):
+    if marca_enviada(receita, "boleto", canal):
         return False
     vencimento = emissao._data_iso(receita.get("vencimento_rec"))
     if vencimento < hoje.isoformat():
@@ -200,7 +218,7 @@ def boleto_cabe_hoje(receita, hoje, vhsys, cache):
     return e_primeira_parcela(receita, vhsys, cache)
 
 
-def etapa_do_dia(receita, hoje):
+def etapa_do_dia(receita, hoje, canal="whatsapp"):
     """Etapa de lembrete que cabe hoje para a receita ("vencimento", "atraso") ou None."""
     try:
         vencimento = dt.date.fromisoformat(emissao._data_iso(receita.get("vencimento_rec")))
@@ -208,14 +226,15 @@ def etapa_do_dia(receita, hoje):
         return None
     if vencimento == hoje:
         hoje_br = hoje.strftime("%d/%m/%Y")
-        if marca_enviada(receita, "vencimento") or marca_enviada(receita, "boleto") == hoje_br:
+        if marca_enviada(receita, "vencimento", canal) \
+                or marca_enviada(receita, "boleto", canal) == hoje_br:
             return None  # boleto mandado hoje mesmo já serve de lembrete
         return "vencimento"
     inicio = primeiro_dia_util(vencimento) + dt.timedelta(days=dias_atraso())
     # janela de 3 dias: se o cron falhar um dia, o aviso sai no seguinte; mais que isso
     # não manda (evita disparar para atrasos antigos ao ligar o recurso)
     if inicio <= hoje <= inicio + dt.timedelta(days=2) and hoje.weekday() < 5 \
-            and not marca_enviada(receita, "atraso"):
+            and not marca_enviada(receita, "atraso", canal):
         return "atraso"
     return None
 
@@ -278,16 +297,45 @@ def enviar(numero, etapa, texto, receita, cobranca, pagamento):
     return enviados, falhas
 
 
-def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, cache=None):
+def assunto(etapa, receita, parcela=None):
+    descricao = (receita.get("nome_conta") or "").strip()
+    venc = _data_br(receita.get("vencimento_rec"))
+    if etapa == "boleto":
+        qual = f" {descricao}" if descricao else ""
+        if parcela:
+            qual += f" (parcela {parcela[0]} de {parcela[1]})"
+        return f"Boleto{qual}: vencimento {venc}"
+    if etapa == "vencimento":
+        return f"Lembrete: seu boleto vence hoje ({venc})"
+    return f"Boleto em aberto: venceu em {venc}"
+
+
+def enviar_email(destinos, etapa, texto, receita, cobranca, pagamento, parcela=None):
+    """O mesmo texto do WhatsApp por e-mail, com o PDF do boleto anexado (se baixar)."""
+    anexos, enviados = [], ["email"]
+    if cobranca.get("bankSlipUrl"):
+        pdf = correio.baixar_pdf(cobranca["bankSlipUrl"])
+        if pdf:
+            fatura = cobranca.get("invoiceNumber") or receita.get("id_conta_rec")
+            anexos.append((f"boleto-{fatura}.pdf", pdf))
+            enviados.append("pdf")
+    recusados = correio.enviar(destinos, assunto(etapa, receita, parcela),
+                               texto_principal(texto, cobranca, pagamento), anexos)
+    return enviados, ({"recusados": ", ".join(recusados)} if recusados else {})
+
+
+def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, cache=None,
+                   canal="whatsapp"):
     id_receita = receita.get("id_conta_rec")
     base = {"receita": id_receita, "cliente": receita.get("nome_cliente"), "etapa": etapa,
-            "valor": receita.get("valor_rec"), "vencimento": receita.get("vencimento_rec")}
+            "canal": canal, "valor": receita.get("valor_rec"),
+            "vencimento": receita.get("vencimento_rec")}
     pid = id_cobranca(receita)
     if not pid:
         return {**base, "resultado": "nao_enviado", "motivo": "receita sem cobrança Asaas"}
     base["cobranca"] = pid
-    if marca_enviada(receita, etapa) and not reenviar:
-        return {**base, "resultado": "ja_enviado", "em": marca_enviada(receita, etapa)}
+    if marca_enviada(receita, etapa, canal) and not reenviar:
+        return {**base, "resultado": "ja_enviado", "em": marca_enviada(receita, etapa, canal)}
     cobranca = asaas.consultar_cobranca(pid) or {}
     if cobranca.get("deleted"):  # excluída no Asaas (ex.: paga por fora, via Pix no C6)
         return {**base, "resultado": "nao_enviado", "motivo": "cobrança excluída no Asaas"}
@@ -295,11 +343,18 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, 
         return {**base, "resultado": "nao_enviado",
                 "motivo": f"cobrança {cobranca.get('status') or 'não encontrada'} no Asaas"}
     cliente = vhsys.consultar_cliente(receita.get("id_cliente")) or {}
-    numero = telefone(cliente)
-    if not numero:
-        return {**base, "resultado": "sem_whatsapp",
-                "motivo": "cliente sem celular válido no cadastro do ERP Lite"}
-    base["numero"] = whatsapp.mascarar(numero)
+    if canal == "email":
+        destinos = correio.enderecos(cliente.get("email_cliente"))
+        if not destinos:
+            return {**base, "resultado": "sem_email",
+                    "motivo": "cliente sem e-mail válido no cadastro do ERP Lite"}
+        base["email"] = ", ".join(correio.mascarar(d) for d in destinos)
+    else:
+        numero = telefone(cliente)
+        if not numero:
+            return {**base, "resultado": "sem_whatsapp",
+                    "motivo": "cliente sem celular válido no cadastro do ERP Lite"}
+        base["numero"] = whatsapp.mascarar(numero)
     parcela, resumo = None, ""
     if etapa == "boleto" and da_integracao(receita):
         parcelas = parcelas_da_cobranca(receita, vhsys, {} if cache is None else cache)
@@ -310,32 +365,38 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, 
     texto = textos(etapa, nome_cliente(cliente, receita), receita, parcela) + resumo
     if not aplicar:
         return {**base, "resultado": "seria_enviado", "texto": texto}
-    numero = whatsapp.destino_verificado(numero)
-    if not numero:
-        return {**base, "resultado": "sem_whatsapp",
-                "motivo": "o celular do cadastro não tem WhatsApp"}
     pagamento = dados_pagamento(cobranca, asaas)
-    enviados, falhas = enviar(numero, etapa, texto, receita, cobranca, pagamento)
+    if canal == "email":
+        enviados, falhas = enviar_email(destinos, etapa, texto, receita, cobranca, pagamento,
+                                        parcela)
+    else:
+        numero = whatsapp.destino_verificado(numero)
+        if not numero:
+            return {**base, "resultado": "sem_whatsapp",
+                    "motivo": "o celular do cadastro não tem WhatsApp"}
+        enviados, falhas = enviar(numero, etapa, texto, receita, cobranca, pagamento)
     base.update(resultado="enviado", mensagens=enviados)
     if falhas:
         base["falhas"] = falhas
     # marca a etapa na receita (relida agora: a emissão pode ter mudado as observações)
     atual = (vhsys.consultar_receita(id_receita) or receita).get("observacoes_rec") or ""
-    linha = f"{MARCAS[etapa]} em {hoje.strftime('%d/%m/%Y')} ({', '.join(enviados)})."
+    linha = f"{MARCAS_CANAL[canal][etapa]} em {hoje.strftime('%d/%m/%Y')} ({', '.join(enviados)})."
     vhsys.atualizar_receita(id_receita, {"observacoes_rec": f"{atual.strip()}\n{linha}".strip()})
     relida = vhsys.consultar_receita(id_receita) or {}
     base["marca_gravada"] = linha in (relida.get("observacoes_rec") or "")
     return base
 
 
-def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=None):
+def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=None,
+           canal="whatsapp"):
     """Percorre as receitas em aberto com boleto no Asaas e manda as etapas pedidas.
 
     etapas: ("boleto",) no cron da emissão; ("vencimento", "atraso") no cron diário.
     desde: mantido por compatibilidade; a lista agora é de todas as receitas em aberto.
     """
     hoje = hoje or agora().date()
-    erros = (ValueError, whatsapp.ErroWhatsapp, getattr(asaas, "ErroAsaas", ValueError),
+    erros = (ValueError, whatsapp.ErroWhatsapp, correio.ErroEmail,
+             getattr(asaas, "ErroAsaas", ValueError),
              getattr(vhsys, "ErroVhsys", ValueError))
     resultados, cache = [], {}
     lista = receitas if receitas is not None else vhsys.receitas_em_aberto()
@@ -344,18 +405,18 @@ def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=
             continue
         if str(receita.get("id_banco") or "") != emissao.conta_asaas():
             continue
-        etapa = "boleto" if "boleto" in etapas else etapa_do_dia(receita, hoje)
+        etapa = "boleto" if "boleto" in etapas else etapa_do_dia(receita, hoje, canal)
         if etapa not in etapas:
             continue
         try:
-            if etapa == "boleto" and not boleto_cabe_hoje(receita, hoje, vhsys, cache):
+            if etapa == "boleto" and not boleto_cabe_hoje(receita, hoje, vhsys, cache, canal):
                 continue
             resultados.append(cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje,
-                                             cache=cache))
+                                             cache=cache, canal=canal))
         except erros as e:  # um cliente com problema não trava os demais
             resultados.append({"receita": receita.get("id_conta_rec"),
                                "cliente": receita.get("nome_cliente"), "etapa": etapa,
-                               "resultado": "erro", "motivo": str(e)})
-    return {"dia": hoje.isoformat(), "etapas": list(etapas), "aplicado": aplicar,
+                               "canal": canal, "resultado": "erro", "motivo": str(e)})
+    return {"dia": hoje.isoformat(), "canal": canal, "etapas": list(etapas), "aplicado": aplicar,
             "resumo": dict(Counter(r["resultado"] for r in resultados)),
             "resultados": resultados}

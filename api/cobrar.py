@@ -10,7 +10,11 @@ Uso manual (com a CRON_SECRET em ?chave=):
     ?chave=...&aplicar=1                envia os lembretes de hoje
     ?chave=...&receita=ID&etapa=boleto  prévia de uma receita (etapa boleto, vencimento
                                         ou atraso); com &aplicar=1 envia, e com
-                                        &reenviar=1 manda de novo uma etapa já enviada
+                                        &reenviar=1 manda de novo uma etapa já enviada;
+                                        &canal=email para o e-mail (padrão: whatsapp)
+
+Os lembretes saem por todos os canais configurados (WhatsApp e, com SMTP na Vercel,
+e-mail), cada um só com o seu modo ativo (WHATSAPP_COBRANCA_MODO / EMAIL_COBRANCA_MODO).
 """
 import datetime as dt
 import json
@@ -23,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_li
 import asaas_api  # noqa: E402
 from autorizacao import autorizado_cron  # noqa: E402
 import cobranca_whatsapp  # noqa: E402
+import correio  # noqa: E402
 import vhsys_api  # noqa: E402
 import whatsapp  # noqa: E402
 
@@ -43,11 +48,17 @@ class handler(BaseHTTPRequestHandler):
             return self._responder(401, {"erro": "não autorizado"})
         pediu_aplicar = p.get("aplicar") == "1"
         do_cron = (self.headers.get("Authorization") or "").startswith("Bearer ")
-        if pediu_aplicar and cobranca_whatsapp.modo() != "ativo":
-            return self._responder(409, {"erro": "o WhatsApp de cobrança está em simulação: "
-                                                 "crie WHATSAPP_COBRANCA_MODO=ativo na Vercel "
-                                                 "antes de aplicar"})
-        aplicar = cobranca_whatsapp.modo() == "ativo" and (pediu_aplicar or do_cron)
+        canal = p.get("canal") or "whatsapp"
+        if canal not in cobranca_whatsapp.CANAIS:
+            return self._responder(400, {"erro": "canal deve ser whatsapp ou email"})
+        canais = [canal] if p.get("receita") else cobranca_whatsapp.canais_configurados()
+        ativos = [c for c in canais if cobranca_whatsapp.modo(c) == "ativo"]
+        if pediu_aplicar and not ativos:
+            return self._responder(409, {"erro": "a cobrança está em simulação: crie "
+                                                 "WHATSAPP_COBRANCA_MODO=ativo (ou "
+                                                 "EMAIL_COBRANCA_MODO=ativo) na Vercel antes "
+                                                 "de aplicar"})
+        aplicar = bool(ativos) and (pediu_aplicar or do_cron)
         try:
             hoje = dt.date.fromisoformat(p["data"]) if p.get("data") else None
         except ValueError:
@@ -56,25 +67,27 @@ class handler(BaseHTTPRequestHandler):
             return self._responder(400, {"erro": "data é só para prévia"})
         try:
             if p.get("receita"):
-                resultado = self._uma_receita(p, aplicar, hoje)
+                resultado = self._uma_receita(p, aplicar, hoje, canal)
             else:
-                resultado = cobranca_whatsapp.cobrar(vhsys_api, asaas_api,
-                                                     ("vencimento", "atraso"),
-                                                     aplicar=aplicar, hoje=hoje)
+                resultado = {c: cobranca_whatsapp.cobrar(
+                    vhsys_api, asaas_api, ("vencimento", "atraso"),
+                    aplicar=aplicar and c in ativos, hoje=hoje, canal=c) for c in canais}
         except ValueError as e:
             return self._responder(400, {"erro": str(e)})
-        except (vhsys_api.ErroVhsys, asaas_api.ErroAsaas, whatsapp.ErroWhatsapp) as e:
+        except (vhsys_api.ErroVhsys, asaas_api.ErroAsaas, whatsapp.ErroWhatsapp,
+                correio.ErroEmail) as e:
             print(json.dumps({"cobrar": "erro", "motivo": str(e)}, ensure_ascii=False))
             return self._responder(502, {"erro": str(e)})
         except Exception as e:  # resposta inesperada de uma API: registra e devolve o erro
             motivo = f"{type(e).__name__}: {e}"
             print(json.dumps({"cobrar": "erro_inesperado", "motivo": motivo}, ensure_ascii=False))
             return self._responder(500, {"erro": motivo})
-        print(json.dumps({"cobrar": resultado.get("resumo") or resultado.get("resultado"),
-                          "aplicado": aplicar}, ensure_ascii=False))
+        resumo = (resultado.get("resultado") if p.get("receita")
+                  else {c: r.get("resumo") for c, r in resultado.items()})
+        print(json.dumps({"cobrar": resumo, "aplicado": aplicar}, ensure_ascii=False))
         self._responder(200, resultado)
 
-    def _uma_receita(self, p, aplicar, hoje):
+    def _uma_receita(self, p, aplicar, hoje, canal):
         if not p["receita"].isdigit():
             raise ValueError("receita deve ser o número da receita")
         etapa = p.get("etapa") or "boleto"
@@ -88,4 +101,5 @@ class handler(BaseHTTPRequestHandler):
                     "motivo": "receita já liquidada"}
         return cobranca_whatsapp.cobrar_receita(
             receita, etapa, vhsys_api, asaas_api, aplicar,
-            hoje or cobranca_whatsapp.agora().date(), reenviar=p.get("reenviar") == "1")
+            hoje or cobranca_whatsapp.agora().date(), reenviar=p.get("reenviar") == "1",
+            canal=canal)
