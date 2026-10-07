@@ -92,6 +92,18 @@ def buscar_cliente_por_documento(cpf_cnpj):
     return clientes[0] if clientes else None
 
 
+def listar_clientes():
+    """Todos os clientes ativos da conta (paginado de 100 em 100)."""
+    clientes, offset = [], 0
+    while True:
+        corpo = _get("/customers", {"offset": offset, "limit": 100}) or {}
+        pagina = corpo.get("data") or []
+        clientes.extend(c for c in pagina if not c.get("deleted"))
+        offset += len(pagina)
+        if not pagina or not corpo.get("hasMore"):
+            return clientes
+
+
 def criar_cliente(dados):
     return _enviar("POST", "/customers", dados)
 
