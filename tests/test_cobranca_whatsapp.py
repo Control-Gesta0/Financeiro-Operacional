@@ -34,7 +34,7 @@ class Vhsys:
         self.receitas = {r["id_conta_rec"]: dict(r) for r in receitas}
         self.clientes = clientes
 
-    def receitas_modificadas_desde(self, data):
+    def receitas_em_aberto(self):
         return [dict(r) for r in self.receitas.values() if r["liquidado_rec"] == "Nao"]
 
     def receitas_do_cliente(self, id_cliente):
@@ -304,6 +304,40 @@ class TestBoleto(unittest.TestCase):
                    receita(3, liquidado="Sim"), receita(4, venc="2026-10-05")], {77: CLIENTE})
         r, msgs = rodar(v, Asaas())
         self.assertEqual((r["resultados"], msgs), ([], []))
+
+
+OBS_ANTIGA = "Cobranca em aberto no Asaas (pay_velho1). Cobrança de P 1402"
+
+
+class TestBoletosAntigos(unittest.TestCase):
+    """Boletos que o ERP anterior ligou ao Asaas (incluídos em 07/10/2026)."""
+
+    def test_so_10_dias_antes_do_vencimento_e_sem_resumo(self):
+        antigas = [receita(51, venc="2026-10-30", obs=OBS_ANTIGA, cad="2026-09-19 15:23:03"),
+                   receita(52, venc="2026-11-30", obs=OBS_ANTIGA.replace("velho1", "velho2"),
+                           cad="2026-09-19 15:23:03")]
+        v = Vhsys(antigas, {77: CLIENTE})
+        r, msgs = rodar(v, Asaas())
+        self.assertEqual(r["resultados"], [])  # nada imediato, mesmo sendo a "primeira"
+        r, msgs = rodar(v, Asaas(), hoje=dt.date(2026, 10, 20))
+        self.assertEqual([x["receita"] for x in r["resultados"]], [51])
+        self.assertEqual(r["resultados"][0]["cobranca"], "pay_velho1")
+        self.assertNotIn("parcela", msgs[0][2])
+        self.assertNotIn("Resumo", msgs[0][2])
+        self.assertEqual([m[0] for m in msgs], ["texto", "pdf"])
+        self.assertIn("WhatsApp: boleto enviado em 20/10/2026", v.receitas[51]["observacoes_rec"])
+
+    def test_lembretes_valem_para_os_antigos(self):
+        v = Vhsys([receita(53, venc="2026-10-06", obs=OBS_ANTIGA)], {77: CLIENTE})
+        r, msgs = rodar(v, Asaas(), etapas=("vencimento", "atraso"))
+        self.assertEqual(r["resultados"][0]["etapa"], "vencimento")
+
+    def test_emitida_pela_integracao_tem_prioridade_sobre_codigo_antigo(self):
+        obs = OBS_ANTIGA + "\n" + OBS
+        self.assertEqual(cw.id_cobranca({"observacoes_rec": obs}), "pay_abc")
+        self.assertTrue(cw.da_integracao({"observacoes_rec": obs}))
+        self.assertFalse(cw.da_integracao({"observacoes_rec": OBS_ANTIGA}))
+        self.assertIsNone(cw.id_cobranca({"observacoes_rec": "sem cobrança"}))
 
 
 class TestLembretes(unittest.TestCase):

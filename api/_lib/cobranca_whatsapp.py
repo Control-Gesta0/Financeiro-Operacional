@@ -1,4 +1,9 @@
-"""Cobrança pelo WhatsApp (Zaptos) das receitas emitidas no Asaas pela integração.
+"""Cobrança pelo WhatsApp (Zaptos) das receitas com boleto no Asaas.
+
+Valem as receitas emitidas pela integração ("Cobrança Asaas pay_...") e, desde
+07/10/2026, as antigas que o ERP anterior ligou ao Asaas ("Cobranca em aberto no Asaas
+(pay_...)"): estas só recebem o boleto 10 dias antes do vencimento (nada imediato, sem
+resumo de parcelas) e os lembretes.
 
 Regras combinadas com o financeiro (05/10/2026):
 - etapa "boleto": a cobrança única e a 1ª parcela de uma parcelada vão logo depois da
@@ -114,8 +119,18 @@ def nome_cliente(cliente, receita):
 
 
 def id_cobranca(receita):
-    m = COBRANCA_DA_RECEITA.search(receita.get("observacoes_rec") or "")
-    return m.group(1) if m else None
+    """Cobrança do Asaas ligada à receita: a emitida pela integração ou a antiga."""
+    obs = receita.get("observacoes_rec") or ""
+    nossa = COBRANCA_DA_RECEITA.search(obs)
+    if nossa:
+        return nossa.group(1)
+    antiga = emissao.TEM_COBRANCA.search(obs)
+    return antiga.group(0) if antiga else None
+
+
+def da_integracao(receita):
+    """Boleto emitido pela integração (os antigos não têm envio imediato nem resumo)."""
+    return bool(COBRANCA_DA_RECEITA.search(receita.get("observacoes_rec") or ""))
 
 
 def marca_enviada(receita, etapa):
@@ -177,6 +192,8 @@ def boleto_cabe_hoje(receita, hoje, vhsys, cache):
         return False  # vencida: quem cuida é o aviso de atraso
     if vencimento <= (hoje + dt.timedelta(days=dias_antes())).isoformat():
         return True
+    if not da_integracao(receita):
+        return False  # boleto antigo do Asaas: só perto do vencimento
     cadastro = emissao._data_iso(receita.get("data_cad_rec"))
     if cadastro < (hoje - dt.timedelta(days=PRIMEIRA_NOVA_POR)).isoformat():
         return False  # antiga: a 1ª parcela já teve a sua vez
@@ -282,7 +299,7 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, 
                 "motivo": "cliente sem celular válido no cadastro do ERP Lite"}
     base["numero"] = whatsapp.mascarar(numero)
     parcela, resumo = None, ""
-    if etapa == "boleto":
+    if etapa == "boleto" and da_integracao(receita):
         parcelas = parcelas_da_cobranca(receita, vhsys, {} if cache is None else cache)
         if len(parcelas) > 1:
             parcela = (posicao_da_parcela(receita, parcelas), len(parcelas))
@@ -310,18 +327,16 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, 
 
 
 def cobrar(vhsys, asaas, etapas, aplicar=False, desde=None, hoje=None, receitas=None):
-    """Percorre as receitas em aberto emitidas pela integração e manda as etapas pedidas.
+    """Percorre as receitas em aberto com boleto no Asaas e manda as etapas pedidas.
 
     etapas: ("boleto",) no cron da emissão; ("vencimento", "atraso") no cron diário.
+    desde: mantido por compatibilidade; a lista agora é de todas as receitas em aberto.
     """
-    desde = desde or os.environ.get("EMISSAO_A_PARTIR_DE", "")
-    if not desde:
-        raise ValueError("defina EMISSAO_A_PARTIR_DE (AAAA-MM-DD) na Vercel")
     hoje = hoje or agora().date()
     erros = (ValueError, whatsapp.ErroWhatsapp, getattr(asaas, "ErroAsaas", ValueError),
              getattr(vhsys, "ErroVhsys", ValueError))
     resultados, cache = [], {}
-    lista = receitas if receitas is not None else vhsys.receitas_modificadas_desde(desde)
+    lista = receitas if receitas is not None else vhsys.receitas_em_aberto()
     for receita in lista:
         if receita.get("liquidado_rec") == "Sim" or not id_cobranca(receita):
             continue
