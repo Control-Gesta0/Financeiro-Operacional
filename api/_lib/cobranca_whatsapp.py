@@ -289,6 +289,8 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, 
     if marca_enviada(receita, etapa) and not reenviar:
         return {**base, "resultado": "ja_enviado", "em": marca_enviada(receita, etapa)}
     cobranca = asaas.consultar_cobranca(pid) or {}
+    if cobranca.get("deleted"):  # excluída no Asaas (ex.: paga por fora, via Pix no C6)
+        return {**base, "resultado": "nao_enviado", "motivo": "cobrança excluída no Asaas"}
     if cobranca.get("status") not in STATUS_A_COBRAR:
         return {**base, "resultado": "nao_enviado",
                 "motivo": f"cobrança {cobranca.get('status') or 'não encontrada'} no Asaas"}
