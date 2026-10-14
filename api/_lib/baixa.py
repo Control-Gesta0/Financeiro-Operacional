@@ -10,6 +10,7 @@ mesmo valor, vencimento e cliente. Em qualquer dúvida nada é alterado e o caso
 Em modo "simulacao" (o padrão) nada é gravado no VHSYS: o resultado só diz o
 que seria feito.
 """
+import html
 import os
 import re
 import unicodedata
@@ -103,7 +104,10 @@ def nome_despesa_taxa(fatura, cliente):
     """Ex.: "Taxas Asaas 868268326 - J.N DOS REIS LOCACOE". A fatura vem primeiro para
     nunca ser cortada; o nome completo do cliente fica nas observações."""
     nome = f"Taxas Asaas {fatura}" + (f" - {cliente}" if cliente else "")
-    return nome[:LIMITE_NOME_DESPESA].rstrip(" -")
+    # o VHSYS guarda "&", "<" e ">" escapados ("&amp;") e conta o limite já escapado
+    while len(html.escape(nome, quote=False)) > LIMITE_NOME_DESPESA:
+        nome = nome[:-1]
+    return nome.rstrip(" -&")
 
 
 def campos_despesa_taxa(pagamento, receita, taxa):
@@ -180,6 +184,16 @@ def taxa_cobranca(pagamento, asaas=None):
     return (f"{taxa:.2f}", "valor_liquido") if taxa > 0 else (None, None)
 
 
+def _taxa(pagamento, receita, vhsys, asaas, ativo):
+    """lancar_taxa sem derrubar o evento: a baixa já foi feita e, se o Asaas reenviar o
+    aviso por causa de um erro só na taxa, a fila de webhooks trava (caso real de
+    07/10/2026). A taxa que falhar sai no reprocessamento do dia."""
+    try:
+        return lancar_taxa(pagamento, receita, vhsys, asaas, ativo)
+    except Exception as e:  # noqa: BLE001 - qualquer falha da taxa vira resultado
+        return {"status": "erro", "motivo": f"{type(e).__name__}: {e}"[:300]}
+
+
 def processar_evento(evento, vhsys, asaas, modo_forcado=None):
     """Aplica um evento de webhook. Erros de comunicação sobem como exceção
     (o handler responde 500 e o Asaas reenvia); o resto vira um resultado.
@@ -212,13 +226,13 @@ def processar_evento(evento, vhsys, asaas, modo_forcado=None):
             # Baixada antes pela integração (ex.: reprocessamento): só completa a taxa.
             if baixada_pela_integracao(receita, pagamento.get("id")):
                 return {**base, "resultado": "ja_liquidada",
-                        "taxa": lancar_taxa(pagamento, receita, vhsys, asaas, ativo)}
+                        "taxa": _taxa(pagamento, receita, vhsys, asaas, ativo)}
             return {**base, "resultado": "ja_liquidada"}
         campos = campos_baixa(pagamento, receita)
         if ativo:
             vhsys.liquidar(receita["id_conta_rec"], campos)
         return {**base, "resultado": "liquidada", "campos": campos,
-                "taxa": lancar_taxa(pagamento, receita, vhsys, asaas, ativo)}
+                "taxa": _taxa(pagamento, receita, vhsys, asaas, ativo)}
 
     if not liquidada:
         return {**base, "resultado": "ja_em_aberto"}

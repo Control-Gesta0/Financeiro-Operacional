@@ -2,6 +2,7 @@
 
     python3 -m unittest discover -s tests
 """
+import html
 import http.server
 import json
 import os
@@ -17,6 +18,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "api" / "_lib"))
 sys.path.insert(0, str(RAIZ / "api" / "webhooks"))
 import baixa  # noqa: E402
+from vhsys_api import ErroVhsys as baixa_vhsys_erro  # noqa: E402
 
 
 class VhsysFalso:
@@ -135,6 +137,10 @@ class TestRegra(unittest.TestCase):
         nome = baixa.nome_despesa_taxa("868268326", "J.N DOS REIS LOCACOES FESTAS E EVENTOS")
         self.assertLessEqual(len(nome), 45)
         self.assertTrue(nome.startswith("Taxas Asaas 868268326 - J.N DOS REIS"))
+        # Caso real de 07/10/2026: "&" vira "&amp;" no VHSYS e conta 5 caracteres.
+        nome = baixa.nome_despesa_taxa("929030788", "PEDRAZZOLI & PEDRAZZOLI LTDA")
+        self.assertLessEqual(len(html.escape(nome, quote=False)), 45)
+        self.assertTrue(nome.startswith("Taxas Asaas 929030788 - PEDRAZZOLI"))
         self.assertEqual(baixa.nome_despesa_taxa("pay_4r7akexz0qfrn793", ""),
                          "Taxas Asaas pay_4r7akexz0qfrn793")
         r = receita(10, cliente="J.N DOS REIS LOCACOES FESTAS E EVENTOS")
@@ -173,6 +179,18 @@ class TestRegra(unittest.TestCase):
                                    AsaasFalso())
         self.assertIsNone(r["taxa"])
         self.assertEqual(v.despesas, {})
+
+    def test_erro_na_taxa_nao_derruba_a_baixa(self):
+        # Caso real de 07/10/2026: a taxa recusada pelo VHSYS fazia o webhook responder
+        # 500 e o Asaas reenviar o aviso até pausar a fila.
+        v = VhsysFalso([receita(10)])
+        def recusa(campos):
+            raise baixa_vhsys_erro("HTTP 403 nome_conta")
+        v.cadastrar_despesa = recusa
+        r = baixa.processar_evento(evento(externalReference="10"), v, AsaasFalso())
+        self.assertEqual(r["resultado"], "liquidada")
+        self.assertEqual(r["taxa"]["status"], "erro")
+        self.assertEqual([i for i, _ in v.liquidadas], [10])
 
     def test_receita_ja_baixada_pela_integracao_so_ganha_a_taxa(self):
         # Caso real de 30/09/2026: J.N e Viviane baixadas antes, taxa ignorada pelo VHSYS.
