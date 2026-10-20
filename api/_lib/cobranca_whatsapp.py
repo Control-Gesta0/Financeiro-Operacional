@@ -31,6 +31,10 @@ Canal e-mail (08/10/2026): a mesma régua e o mesmo texto vão também para o e-
 cadastro do ERP (vários separados por ";"), com o PDF do boleto anexado, pelo SMTP da
 empresa (correio.py). Cada canal tem a sua marca ("WhatsApp: ..." / "E-mail: ..."),
 então um não bloqueia o outro. Só envia com EMAIL_COBRANCA_MODO=ativo.
+
+Descrição dos boletos antigos (20/10/2026): o nome_conta que o ERP anterior gravou vem
+cortado ("Valor de R$ 500,00 (Parcela 3 de 8). Referent") ou é o nome do cliente; o
+texto e o assunto usam o pedido/contrato e a parcela tirados das observações.
 """
 import datetime as dt
 import html
@@ -154,6 +158,34 @@ def da_integracao(receita):
     return bool(COBRANCA_DA_RECEITA.search(receita.get("observacoes_rec") or ""))
 
 
+PARCELA_ANTIGA = re.compile(r"\(Parcela (\d+) de (\d+)\)")
+PEDIDO_ANTIGO = re.compile(r"PEDIDO DE VENDA de codigo (\d+)|Cobrança de P (\d+)")
+CONTRATO_ANTIGO = re.compile(r"CONTRATO ([A-Z0-9][A-Z0-9_-]*) criado")  # ex.: VTECCLOUD
+CONTRATO_CODIGO = re.compile(r"Cobrança de C (\d+)")
+
+
+def descricao(receita):
+    """O que é a cobrança, para o texto e o assunto do boleto ("" se não der para dizer).
+
+    Nas receitas do ERP anterior o nome_conta vem cortado em 45 caracteres ("Valor de
+    R$ 500,00 (Parcela 3 de 8). Referent") ou é o nome do cliente; o pedido ou o contrato
+    sai das observações, que guardam o texto inteiro."""
+    if da_integracao(receita):
+        return (receita.get("nome_conta") or "").strip()
+    obs = receita.get("observacoes_rec") or ""
+    pedido = PEDIDO_ANTIGO.search(obs)
+    if pedido:
+        return f"pedido de venda {pedido.group(1) or pedido.group(2)}"
+    contrato = CONTRATO_ANTIGO.search(obs) or CONTRATO_CODIGO.search(obs)
+    return f"contrato {contrato.group(1)}" if contrato else ""
+
+
+def parcela_antiga(receita):
+    """(n, total) do "(Parcela n de total)" que o ERP anterior gravou, ou None."""
+    m = PARCELA_ANTIGA.search(receita.get("observacoes_rec") or "")
+    return (int(m.group(1)), int(m.group(2))) if m and int(m.group(2)) > 1 else None
+
+
 def marca_enviada(receita, etapa, canal="whatsapp"):
     """Data (dd/mm/aaaa) em que a etapa já foi enviada por esse canal, ou None."""
     m = re.search(re.escape(MARCAS_CANAL[canal][etapa]) + r" em (\d{2}/\d{2}/\d{4})",
@@ -245,10 +277,10 @@ def etapa_do_dia(receita, hoje, canal="whatsapp"):
 def textos(etapa, nome, receita, parcela=None):
     """parcela: (n, total) quando a receita é parcela de uma cobrança parcelada."""
     valor, venc = _reais(receita.get("valor_rec")), _data_br(receita.get("vencimento_rec"))
-    descricao = (receita.get("nome_conta") or "").strip()
+    qual = descricao(receita)
     saudacao = f"Olá, {nome}!" if nome else "Olá!"
     if etapa == "boleto":
-        qual = f" de {descricao}" if descricao else ""
+        qual = f" de {qual}" if qual else ""
         if parcela:
             qual += f" (parcela {parcela[0]} de {parcela[1]})"
         corpo = (f"{saudacao} Segue o boleto{qual} no valor de {valor}, com vencimento em "
@@ -301,10 +333,10 @@ def enviar(numero, etapa, texto, receita, cobranca, pagamento):
 
 
 def assunto(etapa, receita, parcela=None):
-    descricao = (receita.get("nome_conta") or "").strip()
+    qual = descricao(receita)
     venc = _data_br(receita.get("vencimento_rec"))
     if etapa == "boleto":
-        qual = f" {descricao}" if descricao else ""
+        qual = f" {qual}" if qual else ""
         if parcela:
             qual += f" (parcela {parcela[0]} de {parcela[1]})"
         return f"Boleto{qual}: vencimento {venc}"
@@ -365,6 +397,8 @@ def cobrar_receita(receita, etapa, vhsys, asaas, aplicar, hoje, reenviar=False, 
             parcela = (posicao_da_parcela(receita, parcelas), len(parcelas))
             if parcela[0] == 1:
                 resumo = "\n\n" + resumo_das_parcelas(parcelas)
+    elif etapa == "boleto":
+        parcela = parcela_antiga(receita)
     texto = textos(etapa, nome_cliente(cliente, receita), receita, parcela) + resumo
     if not aplicar:
         return {**base, "resultado": "seria_enviado", "texto": texto}

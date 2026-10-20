@@ -395,6 +395,32 @@ class TestBoletosAntigos(unittest.TestCase):
         self.assertEqual([m[0] for m in msgs], ["texto", "pdf"])
         self.assertIn("WhatsApp: boleto enviado em 20/10/2026", v.receitas[51]["observacoes_rec"])
 
+    def test_descricao_sai_das_observacoes_e_nao_do_nome_cortado(self):
+        obs = ("Valor de R$ 500,00 (Parcela 3 de 8). Referente ao PEDIDO DE VENDA de codigo "
+               "1414 efetuado em 11/08/2026 no valor de R$ 4.000,00\n"
+               "Cobranca em aberto no Asaas (pay_velho3). Vínculo pela integração em "
+               "07/10/2026 (fatura 887755155).")
+        r = receita(54, venc="2026-10-25", obs=obs)
+        r["nome_conta"] = "Valor de R$ 500,00 (Parcela 3 de 8). Referent"
+        v = Vhsys([r], {77: CLIENTE})
+        _, msgs = rodar(v, Asaas(), hoje=dt.date(2026, 10, 20))
+        self.assertIn("Segue o boleto de pedido de venda 1414 (parcela 3 de 8) no valor de "
+                      "R$ 350,00", msgs[0][2])
+        self.assertNotIn("Referent", msgs[0][2])
+        self.assertEqual(cw.assunto("boleto", r, cw.parcela_antiga(r)),
+                         "Boleto pedido de venda 1414 (parcela 3 de 8): vencimento 25/10/2026")
+
+    def test_descricao_dos_antigos(self):
+        def d(obs):
+            return cw.descricao({"observacoes_rec": obs, "nome_conta": "CSL DISTRIBUIDORA DE PR"})
+        self.assertEqual(d(OBS_ANTIGA), "pedido de venda 1402")
+        self.assertEqual(d("Cobranca em aberto no Asaas (pay_x). Cobrança de C 315 Referente ao "
+                           "CONTRATO VTECCLOUD criado no dia 01/02/2026"), "contrato VTECCLOUD")
+        self.assertEqual(d("Cobranca em aberto no Asaas (pay_x). Cobrança de C 315"),
+                         "contrato 315")
+        self.assertEqual(d("Cobranca em aberto no Asaas (pay_x)."), "")  # nome do cliente, não
+        self.assertIsNone(cw.parcela_antiga({"observacoes_rec": "(Parcela 1 de 1)"}))
+
     def test_lembretes_valem_para_os_antigos(self):
         v = Vhsys([receita(53, venc="2026-10-06", obs=OBS_ANTIGA)], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(), etapas=("vencimento", "atraso"))
