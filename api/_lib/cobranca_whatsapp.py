@@ -16,6 +16,9 @@ Regras combinadas com o financeiro (05/10/2026):
 - etapa "vencimento": na manhã do dia do vencimento, se ainda estiver em aberto;
 - etapa "atraso": LEMBRETE_DIAS_ATRASO dias (padrão 1) depois do vencimento, contados
   a partir do primeiro dia útil quando o vencimento cai no fim de semana;
+- etapas "atraso7" e "atraso15" (27/10/2026): reforço com 7 dias de atraso e último
+  aviso com 15 dias, este avisando do risco de o sistema ser desabilitado. Saem em dia
+  útil, até 2 dias depois da data (se ela cair no fim de semana, vão na segunda);
 - vai para o celular do cadastro do cliente no ERP Lite;
 - formato: mensagens comuns (o WhatsApp é conectado por QR Code, sem botões):
   1) texto com valor, vencimento, linha digitável e link do boleto; 2) o PDF do boleto
@@ -45,15 +48,21 @@ import whatsapp
 
 BRT = dt.timezone(dt.timedelta(hours=-3))
 ENVIO_DAS, ENVIO_ATE = 8, 20  # janela do envio automático do boleto (horas, Brasília)
-ETAPAS = ("boleto", "vencimento", "atraso")
+ETAPAS = ("boleto", "vencimento", "atraso", "atraso7", "atraso15")
+ETAPAS_DIARIAS = ("vencimento", "atraso", "atraso7", "atraso15")
+DIAS_REFORCO = {"atraso7": 7, "atraso15": 15}
 CANAIS = ("whatsapp", "email")
 MARCAS_CANAL = {
     "whatsapp": {"boleto": "WhatsApp: boleto enviado",
                  "vencimento": "WhatsApp: lembrete de vencimento enviado",
-                 "atraso": "WhatsApp: aviso de atraso enviado"},
+                 "atraso": "WhatsApp: aviso de atraso enviado",
+                 "atraso7": "WhatsApp: aviso de 7 dias de atraso enviado",
+                 "atraso15": "WhatsApp: aviso de 15 dias de atraso enviado"},
     "email": {"boleto": "E-mail: boleto enviado",
               "vencimento": "E-mail: lembrete de vencimento enviado",
-              "atraso": "E-mail: aviso de atraso enviado"},
+              "atraso": "E-mail: aviso de atraso enviado",
+              "atraso7": "E-mail: aviso de 7 dias de atraso enviado",
+              "atraso15": "E-mail: aviso de 15 dias de atraso enviado"},
 }
 MARCAS = MARCAS_CANAL["whatsapp"]
 STATUS_A_COBRAR = ("PENDING", "OVERDUE")
@@ -222,7 +231,8 @@ def boleto_cabe_hoje(receita, hoje, vhsys, cache, canal="whatsapp"):
 
 
 def etapa_do_dia(receita, hoje, canal="whatsapp"):
-    """Etapa de lembrete que cabe hoje para a receita ("vencimento", "atraso") ou None."""
+    """Etapa de lembrete que cabe hoje para a receita ("vencimento", "atraso", "atraso7",
+    "atraso15") ou None."""
     try:
         vencimento = dt.date.fromisoformat(emissao._data_iso(receita.get("vencimento_rec")))
     except ValueError:
@@ -233,10 +243,17 @@ def etapa_do_dia(receita, hoje, canal="whatsapp"):
                 or marca_enviada(receita, "boleto", canal) == hoje_br:
             return None  # boleto mandado hoje mesmo já serve de lembrete
         return "vencimento"
-    inicio = primeiro_dia_util(vencimento) + dt.timedelta(days=dias_atraso())
     # janela de 3 dias: se o cron falhar um dia, o aviso sai no seguinte; mais que isso
     # não manda (evita disparar para atrasos antigos ao ligar o recurso)
-    if inicio <= hoje <= inicio + dt.timedelta(days=2) and hoje.weekday() < 5 \
+    if hoje.weekday() >= 5:
+        return None
+    for etapa, dias in sorted(DIAS_REFORCO.items(), key=lambda x: -x[1]):
+        inicio = vencimento + dt.timedelta(days=dias)
+        if inicio <= hoje <= inicio + dt.timedelta(days=2) \
+                and not marca_enviada(receita, etapa, canal):
+            return etapa
+    inicio = primeiro_dia_util(vencimento) + dt.timedelta(days=dias_atraso())
+    if inicio <= hoje <= inicio + dt.timedelta(days=2) \
             and not marca_enviada(receita, "atraso", canal):
         return "atraso"
     return None
@@ -256,6 +273,17 @@ def textos(etapa, nome, receita, parcela=None):
     elif etapa == "vencimento":
         corpo = (f"{saudacao} Passando para lembrar que o boleto de {valor} vence hoje "
                  f"({venc}). Se já pagou, pode desconsiderar.")
+    elif etapa == "atraso7":
+        corpo = (f"{saudacao} O boleto de {valor}, que venceu em {venc}, está com 7 dias de "
+                 "atraso e ainda não identificamos o pagamento. Os dados para pagamento "
+                 "seguem abaixo. Se precisar de ajuda, é só responder esta mensagem. Se já "
+                 "pagou, pode desconsiderar.")
+    elif etapa == "atraso15":
+        corpo = (f"{saudacao} O boleto de {valor}, que venceu em {venc}, está com 15 dias de "
+                 "atraso. Para evitar que o acesso ao sistema seja desabilitado, pedimos "
+                 "que regularize o pagamento o quanto antes. Os dados para pagamento seguem "
+                 "abaixo. Se precisar negociar, é só responder esta mensagem. Se já pagou, "
+                 "pode desconsiderar.")
     else:
         corpo = (f"{saudacao} Ainda não identificamos o pagamento do boleto de {valor}, "
                  f"que venceu em {venc}. Os dados para pagamento seguem abaixo. Se já pagou, "
@@ -310,6 +338,10 @@ def assunto(etapa, receita, parcela=None):
         return f"Boleto{qual}: vencimento {venc}"
     if etapa == "vencimento":
         return f"Lembrete: seu boleto vence hoje ({venc})"
+    if etapa == "atraso7":
+        return f"Boleto com 7 dias de atraso: venceu em {venc}"
+    if etapa == "atraso15":
+        return f"Aviso importante: boleto vencido em {venc} (risco de bloqueio do sistema)"
     return f"Boleto em aberto: venceu em {venc}"
 
 

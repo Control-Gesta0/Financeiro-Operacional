@@ -440,6 +440,38 @@ class TestLembretes(unittest.TestCase):
                          aplicar=False, hoje=dt.date(2026, 10, dia))
             self.assertEqual([x["etapa"] for x in r["resultados"]], esperado, dia)
 
+    def test_reforcos_de_7_e_15_dias(self):
+        v = Vhsys([receita(venc="2026-10-05")], {77: CLIENTE})
+        etapas = cw.ETAPAS_DIARIAS
+        r, msgs = rodar(v, Asaas(status="OVERDUE"), etapas=etapas, hoje=dt.date(2026, 10, 12))
+        self.assertEqual(r["resultados"][0]["etapa"], "atraso7")
+        self.assertIn("7 dias de atraso", msgs[0][2])
+        self.assertNotIn("desabilitado", msgs[0][2])
+        r, msgs = rodar(v, Asaas(status="OVERDUE"), etapas=etapas, hoje=dt.date(2026, 10, 13))
+        self.assertEqual(msgs, [])  # 7 dias já avisado
+        r, msgs = rodar(v, Asaas(status="OVERDUE"), etapas=etapas, hoje=dt.date(2026, 10, 20))
+        self.assertEqual(r["resultados"][0]["etapa"], "atraso15")
+        self.assertIn("15 dias de atraso", msgs[0][2])
+        self.assertIn("acesso ao sistema seja desabilitado", msgs[0][2])
+        r, msgs = rodar(v, Asaas(status="OVERDUE"), etapas=etapas, hoje=dt.date(2026, 10, 21))
+        self.assertEqual(msgs, [])
+
+    def test_reforco_no_fim_de_semana_vai_na_segunda(self):
+        # 03/10 + 7 = sábado 10/10: nada no fim de semana, sai na segunda 12/10
+        v = Vhsys([receita(venc="2026-10-03")], {77: CLIENTE})
+        for dia, esperado in ((10, []), (11, []), (12, ["atraso7"])):
+            r, _ = rodar(v, Asaas(status="OVERDUE"), etapas=cw.ETAPAS_DIARIAS,
+                         aplicar=False, hoje=dt.date(2026, 10, dia))
+            self.assertEqual([x["etapa"] for x in r["resultados"]], esperado, dia)
+
+    def test_reforco_de_atraso_antigo_nao_dispara(self):
+        v = Vhsys([receita(venc="2026-09-10")], {77: CLIENTE})  # 26 dias de atraso
+        r, _ = rodar(v, Asaas(status="OVERDUE"), etapas=cw.ETAPAS_DIARIAS)
+        self.assertEqual(r["resultados"], [])
+
+    def test_assunto_do_aviso_de_15_dias(self):
+        self.assertIn("risco de bloqueio", cw.assunto("atraso15", receita(venc="2026-10-05")))
+
     def test_atraso_antigo_nao_dispara(self):
         v = Vhsys([receita(venc="2026-09-01")], {77: CLIENTE})
         r, msgs = rodar(v, Asaas(status="OVERDUE"), etapas=("vencimento", "atraso"))
