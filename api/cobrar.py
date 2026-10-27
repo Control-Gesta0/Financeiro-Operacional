@@ -1,4 +1,5 @@
-"""GET /api/cobrar: lembretes de cobrança pelo WhatsApp (dia do vencimento e atraso).
+"""GET /api/cobrar: lembretes de cobrança pelo WhatsApp (dia do vencimento e atraso
+de 1, 7 e 15 dias).
 
 Chamado pelo cron da Vercel às 10h de Brasília (vercel.json). Só envia com
 WHATSAPP_COBRANCA_MODO=ativo; antes disso, e em chamada manual sem aplicar=1, é prévia.
@@ -8,8 +9,8 @@ Uso manual (com a CRON_SECRET em ?chave=):
     ?chave=...                          prévia dos lembretes de hoje
     ?chave=...&data=AAAA-MM-DD          prévia como se fosse outro dia
     ?chave=...&aplicar=1                envia os lembretes de hoje
-    ?chave=...&receita=ID&etapa=boleto  prévia de uma receita (etapa boleto, vencimento
-                                        ou atraso); com &aplicar=1 envia, e com
+    ?chave=...&receita=ID&etapa=boleto  prévia de uma receita (etapa boleto, vencimento,
+                                        atraso, atraso7 ou atraso15); com &aplicar=1 envia, e com
                                         &reenviar=1 manda de novo uma etapa já enviada;
                                         &canal=email para o e-mail (padrão: whatsapp)
 
@@ -70,7 +71,7 @@ class handler(BaseHTTPRequestHandler):
                 resultado = self._uma_receita(p, aplicar, hoje, canal)
             else:
                 resultado = {c: cobranca_whatsapp.cobrar(
-                    vhsys_api, asaas_api, ("vencimento", "atraso"),
+                    vhsys_api, asaas_api, cobranca_whatsapp.ETAPAS_DIARIAS,
                     aplicar=aplicar and c in ativos, hoje=hoje, canal=c) for c in canais}
         except ValueError as e:
             return self._responder(400, {"erro": str(e)})
