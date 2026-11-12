@@ -54,7 +54,10 @@ def listar_em_aberto(endpoint):
         if body.get("status") != "success":
             sys.exit(f"Erro da API ({endpoint}): {json.dumps(body, ensure_ascii=False)[:500]}")
         pagina = body.get("data") or []
-        contas.extend(c for c in pagina if c.get("lixeira", "Nao") == "Nao")
+        # agrupado=1: conta original que foi juntada numa "receita agrupadora" no VHSYS.
+        # Fica com saldo 0 e liquidado=Nao, mas quem vale é a agrupadora, então sai da lista.
+        contas.extend(c for c in pagina
+                      if c.get("lixeira", "Nao") == "Nao" and str(c.get("agrupado") or 0) != "1")
         total = int(body.get("paging", {}).get("total", 0))
         offset += len(pagina)
         if not pagina or offset >= total:
