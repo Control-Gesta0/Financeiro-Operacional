@@ -61,6 +61,20 @@ def consultar_receita(id_receita):
     return dados[0] if isinstance(dados, list) else dados or None
 
 
+def agrupada(receita):
+    """Conta original juntada numa "receita agrupadora" pelo VHSYS (agrupado=1).
+
+    Ela continua liquidado=Nao, com saldo zero, mas quem vale é a agrupadora. Não pode
+    ser cobrada, baixada nem receber cobrança nova (caso real: ECO MAQUINAS, 09/10/2026,
+    R$ 963,00 + R$ 450,00 agrupadas em R$ 1.413,00).
+    """
+    return str(receita.get("agrupado") or 0) == "1"
+
+
+def _sem_agrupadas(receitas):
+    return [r for r in receitas if not agrupada(r)]
+
+
 def buscar_abertas(valor, vencimento):
     """Receitas não liquidadas e fora da lixeira com exatamente esse valor e vencimento.
 
@@ -83,7 +97,7 @@ def buscar_abertas(valor, vencimento):
         if not pagina or offset >= int((corpo.get("paging") or {}).get("total", 0)):
             break
     return [r for r in receitas
-            if r.get("liquidado_rec", "Nao") == "Nao"
+            if r.get("liquidado_rec", "Nao") == "Nao" and not agrupada(r)
             and Decimal(str(r.get("valor_rec") or 0)) == alvo
             and vencimento in (r.get("vencimento_rec"), r.get("vencimento_original"))]
 
@@ -202,17 +216,17 @@ def liquidar_despesa(id_despesa, valor, data):
 # ------------------------------------------------------------------ emissão
 def receitas_modificadas_desde(data):
     """Receitas em aberto criadas ou modificadas a partir da data (YYYY-MM-DD)."""
-    return _todas({"liquidado": "Nao", "lixeira": "Nao", "data_modificacao": data})
+    return _sem_agrupadas(_todas({"liquidado": "Nao", "lixeira": "Nao", "data_modificacao": data}))
 
 
 def receitas_em_aberto():
     """Todas as receitas não liquidadas fora da lixeira."""
-    return _todas({"liquidado": "Nao", "lixeira": "Nao"})
+    return _sem_agrupadas(_todas({"liquidado": "Nao", "lixeira": "Nao"}))
 
 
 def receitas_do_cliente(id_cliente):
-    """Todas as receitas do cliente fora da lixeira, abertas e liquidadas."""
-    return _todas({"id_cliente": id_cliente, "lixeira": "Nao"})
+    """Todas as receitas do cliente fora da lixeira, abertas e liquidadas (sem as agrupadas)."""
+    return _sem_agrupadas(_todas({"id_cliente": id_cliente, "lixeira": "Nao"}))
 
 
 def listar_clientes():

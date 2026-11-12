@@ -18,8 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api" / "_lib"))
 import vhsys_api  # noqa: E402
 
 
-def rec(id_, valor, venc, liquidado="Nao", data_pag=None, venc_original=None, obs=""):
-    return {"id_conta_rec": id_, "valor_rec": valor, "vencimento_rec": venc,
+def rec(id_, valor, venc, liquidado="Nao", data_pag=None, venc_original=None, obs="",
+        agrupado=0):
+    return {"agrupado": agrupado, "id_conta_rec": id_, "valor_rec": valor, "vencimento_rec": venc,
             "observacoes_rec": obs,
             "vencimento_original": venc_original or venc, "liquidado_rec": liquidado,
             "data_pagamento": data_pag, "nome_cliente": "J.N DOS REIS LOCACOES FESTAS E EVENTOS"}
@@ -32,7 +33,9 @@ RECEITAS = [rec(1, "828.00", "2026-09-05",
             rec(3, "828.00", "2026-11-05"), rec(4, "900.00", "2026-09-05"),
             rec(5, "828.00", "2026-08-05", venc_original="2026-09-05"),
             rec(6, "828.00", "2026-09-30", "Sim", data_pag="2026-09-30"),
-            rec(7, "828.00", "2026-10-30", "Sim", data_pag="2026-10-01")]
+            rec(7, "828.00", "2026-10-30", "Sim", data_pag="2026-10-01"),
+            # juntada numa receita agrupadora: segue "Nao" no VHSYS, mas não vale mais
+            rec(8, "828.00", "2026-09-05", agrupado=1)]
 
 
 class VhsysAPartirDe(http.server.BaseHTTPRequestHandler):
@@ -113,6 +116,12 @@ class TestFiltros(unittest.TestCase):
         self.assertEqual([r["id_conta_rec"] for r in sem_valor], [1])
         self.assertEqual(vhsys_api.buscar_por_cobranca("pay_inexistente", "828.00"), [])
         self.assertEqual(vhsys_api.buscar_por_cobranca("pay_4r7akexz0qfrn79", "828.00"), [])
+
+    def test_agrupadas_ficam_de_fora(self):
+        self.assertNotIn(8, [r["id_conta_rec"] for r in vhsys_api.receitas_em_aberto()])
+        self.assertNotIn(8, [r["id_conta_rec"] for r in vhsys_api.receitas_do_cliente(1)])
+        self.assertTrue(vhsys_api.agrupada({"agrupado": "1"}))
+        self.assertFalse(vhsys_api.agrupada({"agrupado": 0}))
 
     def test_liquidadas_so_do_dia(self):
         achadas = vhsys_api.listar_liquidadas("2026-09-30")
